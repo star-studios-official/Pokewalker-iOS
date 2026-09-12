@@ -44,6 +44,7 @@
     <key>UIBackgroundModes</key>
     <array>
         <string>processing</string>
+        <string>healthkit</string>
     </array>
     <key>NSLocalNetworkUsageDescription</key>
     <string>PokeStride needs local network access to connect to your 3DS running pkwbridge for save transfers.</string>

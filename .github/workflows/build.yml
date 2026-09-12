@@ -8,14 +8,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
     inputs:
-      build_configuration:
-        description: 'Build configuration'
-        required: false
-        default: 'Release'
-        type: choice
-        options:
-          - Debug
-          - Release
       release_nightly:
         description: Create a nightly release
         type: boolean
@@ -24,83 +16,48 @@ on:
 env:
   PROJECT_NAME: PokeStride
   SCHEME_NAME: PokeStride
-  IOS_VERSION: '26.0'
+  archive_path: archive
 
 jobs:
   build:
     name: Build iOS App
-    runs-on: xcode-27
+    runs-on: macos-latest
     timeout-minutes: 30
     outputs:
       artifact: ${{ env.PROJECT_NAME }}.ipa
 
     steps:
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.2'
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           path: PokeStride-iOS
 
-      - name: Select build configuration
-        run: |
-          CONFIG="${{ github.event.inputs.build_configuration || 'Release' }}"
-          echo "BUILD_CONFIG=$CONFIG" >> $GITHUB_ENV
-
-      - name: Build C emulator (for simulator verification)
+      - name: Archive
         working-directory: PokeStride-iOS
         run: |
-          # Verify C code compiles
-          cc -fsyntax-only -Weverything -Wno-gnu-zero-variadic-macro-arguments \
-            -Wno-padded -Wno-covered-switch-default \
-            -x c PokeStride/Emulator/h8300h.c \
-            -include PokeStride/Emulator/h8300h.h
-          echo "✅ C emulator core compiles cleanly"
-
-      - name: Build iOS App (Simulator)
-        working-directory: PokeStride-iOS
-        run: |
-          xcodebuild build \
+          xcodebuild archive \
+            -archivePath "$archive_path" \
             -project "${{ env.PROJECT_NAME }}.xcodeproj" \
             -scheme "${{ env.SCHEME_NAME }}" \
-            -destination "generic/platform=iOS Simulator" \
-            -configuration "${{ env.BUILD_CONFIG }}" \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO \
-            | xcpretty
+            -sdk iphoneos \
+            -arch arm64 \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            | xcpretty && exit ${PIPESTATUS[0]}
 
-      - name: Build iOS App (Device)
+      - name: Create IPA
         working-directory: PokeStride-iOS
         run: |
-          xcodebuild build \
-            -project "${{ env.PROJECT_NAME }}.xcodeproj" \
-            -scheme "${{ env.SCHEME_NAME }}" \
-            -destination "generic/platform=iOS" \
-            -configuration "${{ env.BUILD_CONFIG }}" \
-            -derivedDataPath build/DerivedData \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO \
-            | xcpretty
-
-      - name: Export IPA (unsigned)
-        working-directory: PokeStride-iOS
-        run: |
-          APP_PATH=$(find build/DerivedData -name "${{ env.PROJECT_NAME }}.app" -type d | head -1)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ App bundle not found"
-            exit 1
-          fi
-
-          echo "📦 Found app bundle: $APP_PATH"
-
-          # Create Payload directory
-          mkdir -p Payload
-          cp -r "$APP_PATH" Payload/
-
-          # Create IPA
-          zip -r "${{ env.PROJECT_NAME }}.ipa" Payload/
-
-          echo "✅ IPA created: $(ls -lh ${{ env.PROJECT_NAME }}.ipa | awk '{print $5}')"
+          mv "$archive_path.xcarchive/Products/Applications" Payload
+          zip -r "${{ env.PROJECT_NAME }}.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"
+          echo "IPA created: $(ls -lh ${{ env.PROJECT_NAME }}.ipa | awk '{print $5}')"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
@@ -113,10 +70,10 @@ jobs:
       - name: Verify project structure
         working-directory: PokeStride-iOS
         run: |
-          echo "📂 Project structure:"
+          echo "Project structure:"
           find . -name "*.swift" -o -name "*.c" -o -name "*.h" | head -20
           echo ""
-          echo "📊 File counts:"
+          echo "File counts:"
           echo "  Swift files: $(find . -name '*.swift' | wc -l)"
           echo "  C files: $(find . -name '*.c' | wc -l)"
           echo "  Header files: $(find . -name '*.h' | wc -l)"

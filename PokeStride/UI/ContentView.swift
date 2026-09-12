@@ -99,7 +99,7 @@ struct ContentView: View {
                 // Outer bezel
                 RoundedRectangle(cornerRadius: 16)
                     .fill(.ultraThinMaterial)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .background(.ultraThinMaterial))
                     .frame(height: 280)
                 
                 // LCD screen
@@ -124,7 +124,7 @@ struct ContentView: View {
                 }
             }
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+        .background(.ultraThinMaterial))
     }    // MARK: - Stats Bar
 
     private var statsBar: some View {
@@ -145,7 +145,7 @@ struct ContentView: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .glassEffect(.regular, in: .capsule)
+                .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
 
@@ -183,7 +183,7 @@ struct ContentView: View {
                     .font(.system(.title2, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
-                    .glassEffect(.regular, in: .circle)
+                    .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
             
@@ -197,7 +197,7 @@ struct ContentView: View {
                     .font(.system(.title2, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
                     .frame(width: 72, height: 72)
-                    .glassEffect(.regular, in: .circle)
+                    .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
             
@@ -211,7 +211,7 @@ struct ContentView: View {
                     .font(.system(.title2, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
-                    .glassEffect(.regular, in: .circle)
+                    .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
         }
@@ -230,7 +230,7 @@ struct ContentView: View {
                     .foregroundStyle(.white.opacity(0.7))
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                    .glassEffect(.regular, in: .capsule)
+                    .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
             
@@ -243,7 +243,7 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.7))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .glassEffect(.regular, in: .capsule)
+                        .background(.ultraThinMaterial)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -255,7 +255,7 @@ struct ContentView: View {
                         .foregroundStyle(.white.opacity(0.7))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .glassEffect(.regular, in: .capsule)
+                        .background(.ultraThinMaterial)
                 }
                 .buttonStyle(.plain)
             }
@@ -291,7 +291,7 @@ struct StatBadge: View {
         .frame(minWidth: 70)
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        .background(.ultraThinMaterial))
     }
 }
 

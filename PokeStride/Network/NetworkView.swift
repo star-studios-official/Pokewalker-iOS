@@ -107,7 +107,7 @@ struct NetworkView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .background(.ultraThinMaterial))
     }
 
     // MARK: - Connection Form
@@ -161,12 +161,12 @@ struct NetworkView: View {
                 .foregroundStyle(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
-                .glassEffect(.regular, in: .capsule)
+                .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
         }
         .padding(16)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .background(.ultraThinMaterial))
     }
 
     // MARK: - Transfer Controls
@@ -199,7 +199,7 @@ struct NetworkView: View {
                 }
                 .foregroundStyle(.white)
                 .padding(12)
-                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                .background(.ultraThinMaterial))
             }
             .buttonStyle(.plain)
             .disabled(isTransferring)
@@ -225,13 +225,13 @@ struct NetworkView: View {
                 }
                 .foregroundStyle(.white)
                 .padding(12)
-                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+                .background(.ultraThinMaterial))
             }
             .buttonStyle(.plain)
             .disabled(isTransferring)
         }
         .padding(16)
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        .background(.ultraThinMaterial))
     }
 
     // MARK: - Protocol Info
@@ -267,11 +267,11 @@ struct NetworkView: View {
                 isTransferring = false
                 if success {
                     isConnected = true
-                    statusMessage = "Connected to 3DS pkwbridge"
-                    connectionInfo = ConnectionInfo(device: "PKWBridge (3DS)", version: "latest")
+                    statusMessage = "Connected! Server at \(ipAddress):\(portNum)"
+                    connectionInfo = ConnectionInfo(device: "PKWBridge (3DS)", version: "v1.1")
                 } else {
-                    statusMessage = "Connection failed — check IP and port"
-                    errorMessage = "Could not connect to \(ipAddress):\(portNum)\nMake sure pkwbridge is running on your 3DS."
+                    statusMessage = "Connection failed"
+                    errorMessage = "Could not connect to \(ipAddress):\(portNum)\n\nMake sure:\n1. pkwbridge WiFi server is started on your 3DS\n2. Both devices are on the same WiFi network\n3. Your 3DS IP is correct (check System Settings > Internet)"
                     showError = true
                 }
             }
