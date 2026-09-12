@@ -16,6 +16,7 @@ on:
 env:
   PROJECT_NAME: PokeStride
   SCHEME_NAME: PokeStride
+  BUNDLE_ID: com.pokestride.app
   archive_path: archive
 
 jobs:
@@ -37,6 +38,9 @@ jobs:
         with:
           path: PokeStride-iOS
 
+      - name: Install ldid
+        run: brew install ldid
+
       - name: Archive
         working-directory: PokeStride-iOS
         run: |
@@ -50,12 +54,51 @@ jobs:
             -configuration Release \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Create IPA
+      - name: Create IPA with embedded entitlements
         working-directory: PokeStride-iOS
         run: |
-          mv "$archive_path.xcarchive/Products/Applications" Payload
-          zip -r "${{ env.PROJECT_NAME }}.ipa" "Payload" -x "._*" -x ".DS_Store" -x "__MACOSX"
+          # Find the .app bundle
+          APP_PATH=$(find "$archive_path.xcarchive/Products/Applications" -name "${{ env.PROJECT_NAME }}.app" -type d | head -1)
+          BINARY_PATH="$APP_PATH/${{ env.PROJECT_NAME }}"
+          ENTITLEMENTS="PokeStride/PokeStride.entitlements"
+          
+          echo "App bundle: $APP_PATH"
+          echo "Binary: $BINARY_PATH"
+          
+          # Embed entitlements into the Mach-O binary using ldid (like Azahar/UTM)
+          # This fakes code-signing with the entitlements so the runtime sees them
+          # (HealthKit background delivery requires com.apple.developer.healthkit entitlement)
+          ldid -S"$ENTITLEMENTS" \
+               -I"${{ env.BUNDLE_ID }}" \
+               "$BINARY_PATH"
+          
+          # Verify entitlements are embedded
+          echo "=== Entitlements in binary: ==="
+          ldid -e "$BINARY_PATH"
+          ldid -e "$BINARY_PATH" | grep -q "healthkit" \
+            && echo "OK: healthkit entitlement embedded" \
+            || echo "WARNING: healthkit entitlement not found"
+          
+          # Copy entitlements to _CodeSignature for sideloading tools
+          mkdir -p "$APP_PATH/_CodeSignature"
+          plutil -convert binary1 \
+            -o "$APP_PATH/_CodeSignature/entitlements.plist" \
+            "$ENTITLEMENTS"
+          echo "Embedded entitlements in _CodeSignature/entitlements.plist"
+          
+          # Create IPA directory structure
+          mkdir -p Payload
+          cp -r "$APP_PATH" Payload/
+          
+          # Create the IPA (zip with .ipa extension)
+          zip -r "${{ env.PROJECT_NAME }}.ipa" Payload -x "._*" -x ".DS_Store" -x "__MACOSX"
           echo "IPA created: $(ls -lh ${{ env.PROJECT_NAME }}.ipa | awk '{print $5}')"
+          
+          # Verify final bundle
+          echo "=== Final bundle contents ==="
+          ls -la "Payload/${{ env.PROJECT_NAME }}.app/" | head -15
+          echo "=== Entitlements in final binary ==="
+          ldid -e "Payload/${{ env.PROJECT_NAME }}.app/${{ env.PROJECT_NAME }}"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4

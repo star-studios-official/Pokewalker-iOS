@@ -293,15 +293,16 @@ class PokeWalkerEmulator: ObservableObject {
         guard !stepCountingActive else { return }
         stepCountingActive = true
 
-        // Request HealthKit authorization
+        // Request HealthKit authorization — use DispatchQueue.main.async
+        // instead of Task { @MainActor } to avoid Swift 6 actor-isolation traps.
         let stepType = HKQuantityType.quantityType(forIdentifier: .stepCount)!
         healthStore.requestAuthorization(toShare: nil, read: [stepType]) { [weak self] granted, error in
             guard granted, error == nil else {
                 print("HealthKit auth denied, falling back to CMPedometer")
-                Task { @MainActor in self?.startCMPedometerFallback() }
+                DispatchQueue.main.async { self?.startCMPedometerFallback() }
                 return
             }
-            Task { @MainActor in self?.setupHealthKitObserver() }
+            DispatchQueue.main.async { self?.setupHealthKitObserver() }
         }
     }
 
@@ -310,16 +311,16 @@ class PokeWalkerEmulator: ObservableObject {
         let startOfDay = Calendar.current.startOfDay(for: Date())
         let predicate = HKQuery.predicateForSamples(withStart: startOfDay, end: nil)
 
-        // Get initial count (capture lastStepCount before closure to avoid actor crossing)
+        // Get initial count — use DispatchQueue.main.async (not Task) to avoid
+        // Swift 6 actor-isolation checks on HealthKit background queues.
         let statsQuery = HKStatisticsQuery(quantityType: stepType, quantitySamplePredicate: predicate, options: .cumulativeSum) { [weak self] _, result, _ in
             guard let sum = result?.sumQuantity() else { return }
             let count = Int(sum.doubleValue(for: .count()))
-            Task { @MainActor in self?.lastStepCount = count }
+            DispatchQueue.main.async { self?.lastStepCount = count }
         }
         healthStore.execute(statsQuery)
 
         // Observer for real-time updates (works in background)
-        // Nonisolated(unsafe) copies avoid actor-crossing warnings in closures
         let store = healthStore
         let stepTypeCapture = stepType
         observerQuery = HKObserverQuery(sampleType: stepType, predicate: predicate) { [weak self] _, completionHandler, error in
@@ -328,7 +329,8 @@ class PokeWalkerEmulator: ObservableObject {
             let innerQuery = HKStatisticsQuery(quantityType: stepTypeCapture, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, innerResult, _ in
                 guard let sum = innerResult?.sumQuantity() else { completionHandler(); return }
                 let total = Int(sum.doubleValue(for: .count()))
-                Task { @MainActor [weak self] in
+                // Dispatch to main to avoid actor-isolation check on background queue
+                DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     let delta = total - self.lastStepCount
                     if delta > 0 {
@@ -361,12 +363,15 @@ class PokeWalkerEmulator: ObservableObject {
     private func startCMPedometerFallback() {
         guard CMPedometer.isStepCountingAvailable() else { return }
         let startOfDay = Calendar.current.startOfDay(for: Date())
+        // Use DispatchQueue.main.async (not Task { @MainActor }) to avoid
+        // Swift 6 actor-isolation checks on the CMPedometer background queue.
         pedometer.startUpdates(from: startOfDay) { [weak self] data, error in
             guard let data = data, error == nil else { return }
-            let delta = data.numberOfSteps.intValue - (self?.lastStepCount ?? 0)
-            if delta > 0, let self = self {
-                self.lastStepCount = data.numberOfSteps.intValue
-                Task { @MainActor in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let delta = data.numberOfSteps.intValue - self.lastStepCount
+                if delta > 0 {
+                    self.lastStepCount = data.numberOfSteps.intValue
                     guard let s = self.statePointer else { return }
                     h8_inject_steps(s, UInt32(delta))
                     self.steps = h8_get_steps(s)
