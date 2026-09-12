@@ -37,6 +37,8 @@
     <array>
         <string>arm64</string>
     </array>
+    <key>NSMotionUsageDescription</key>
+    <string>PokeStride uses your motion data to count steps for the PokéWalker emulator.</string>
     <key>NSHealthShareUsageDescription</key>
     <string>PokeStride reads your step count from Apple Health to simulate walking in the PokéWalker.</string>
     <key>NSHealthUpdateUsageDescription</key>
