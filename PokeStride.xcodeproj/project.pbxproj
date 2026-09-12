@@ -257,8 +257,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = PokeStride/PokeStride.entitlements;
+				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PokeStride/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "PokeStride";
@@ -272,6 +274,7 @@
 				);
 				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pokestride.app;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -288,8 +291,10 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = PokeStride/PokeStride.entitlements;
+				CODE_SIGN_IDENTITY = "$(inherited)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "$(DEVELOPMENT_TEAM)";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = PokeStride/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "PokeStride";
@@ -303,6 +308,7 @@
 				);
 				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pokestride.app;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
