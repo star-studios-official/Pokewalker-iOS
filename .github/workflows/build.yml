@@ -40,14 +40,16 @@ jobs:
       - name: Archive
         working-directory: PokeStride-iOS
         run: |
+          set -o pipefail
           xcodebuild archive \
             -archivePath "$archive_path" \
             -project "${{ env.PROJECT_NAME }}.xcodeproj" \
             -scheme "${{ env.SCHEME_NAME }}" \
+            -destination 'generic/platform=iOS' \
             -sdk iphoneos \
             -arch arm64 \
             -configuration Release \
-            | xcpretty && exit ${PIPESTATUS[0]}
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Create IPA
         working-directory: PokeStride-iOS
