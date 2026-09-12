@@ -30,7 +30,7 @@
 		A10000020000000000000008 /* h8300h.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = h8300h.c; sourceTree = "<group>"; };
 		A10000020000000000000010 /* h8300h.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h8300h.h; sourceTree = "<group>"; };
 		A10000020000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A10000020000000000000030 /* Data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Data; sourceTree = "<group>"; };
+		A10000020000000000000030 /* Data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Resources/Data; sourceTree = "<group>"; };
 		A10000020000000000000031 /* AppIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = AppIcon.png; sourceTree = "<group>"; };
 		A10000020000000000000020 /* PokeStride.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PokeStride.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000020000000000000021 /* PokeStride.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PokeStride.entitlements; sourceTree = "<group>"; };
@@ -78,7 +78,6 @@
 			children = (
 				A10000020000000000000002 /* ContentView.swift */,
 				A10000020000000000000003 /* SettingsView.swift */,
-				A10000020000000000000004 /* NetworkView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
