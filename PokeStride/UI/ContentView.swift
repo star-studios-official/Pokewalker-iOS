@@ -61,7 +61,8 @@ struct ContentView: View {
         HStack {
             VStack(alignment: .leading) {
                 Text("PokéWalker")
-                    .font(.title2.weight(.semibold).design(.rounded))
+                    .font(.title2.weight(.semibold))
+                    .fontDesign(.rounded)
                     .foregroundStyle(.white)
                 Text("HeartGold · SoulSilver")
                     .font(.system(.caption, design: .rounded))

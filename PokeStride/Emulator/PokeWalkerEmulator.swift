@@ -198,13 +198,13 @@ class PokeWalkerEmulator: ObservableObject {
         let palette = paletteForMode(colorMode)
         var color = [UInt32](repeating: 0, count: raw.count)
         for i in 0..<raw.count {
-            let g = Int(raw[i] & 0xFF)
-            let idx = g > 0xCC ? 0 : g > 0x88 ? 1 : g > 0x44 ? 2 : 3
+            let pixel = raw[i] & 0xFF
+            let idx = pixel > 0xCC ? 0 : pixel > 0x88 ? 1 : pixel > 0x44 ? 2 : 3
             let c = palette[idx]
-            let r = UInt32(c.r) << 16
-            let g = UInt32(c.g) << 8
-            let b = UInt32(c.b)
-            color[i] = r | g | b | 0xFF000000
+            let red = UInt32(c.r) << 16
+            let grn = UInt32(c.g) << 8
+            let blu = UInt32(c.b)
+            color[i] = red | grn | blu | 0xFF000000
         }
         let cs = CGColorSpaceCreateDeviceRGB()
         color.withUnsafeMutableBytes {
@@ -294,35 +294,39 @@ class PokeWalkerEmulator: ObservableObject {
         let startOfDay = Calendar.current.startOfDay(for: Date())
         let predicate = HKQuery.predicateForSamples(withStart: startOfDay, end: nil)
 
-        // Get initial count
+        // Get initial count (capture lastStepCount before closure to avoid actor crossing)
         let statsQuery = HKStatisticsQuery(quantityType: stepType, quantitySamplePredicate: predicate, options: .cumulativeSum) { [weak self] _, result, _ in
             guard let sum = result?.sumQuantity() else { return }
-            self?.lastStepCount = Int(sum.doubleValue(for: .count()))
+            let count = Int(sum.doubleValue(for: .count()))
+            Task { @MainActor in self?.lastStepCount = count }
         }
         healthStore.execute(statsQuery)
 
         // Observer for real-time updates (works in background)
+        // Nonisolated(unsafe) copies avoid actor-crossing warnings in closures
+        let store = healthStore
+        let stepTypeCapture = stepType
         observerQuery = HKObserverQuery(sampleType: stepType, predicate: predicate) { [weak self] _, completionHandler, error in
             guard error == nil else { completionHandler(); return }
-            // Capture lastStepCount at call time to avoid actor crossing
-            let lastCount = self?.lastStepCount ?? 0
             // Re-query the total and compute delta
-            let innerQuery = HKStatisticsQuery(quantityType: stepType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, innerResult, _ in
+            let innerQuery = HKStatisticsQuery(quantityType: stepTypeCapture, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, innerResult, _ in
                 guard let sum = innerResult?.sumQuantity() else { completionHandler(); return }
                 let total = Int(sum.doubleValue(for: .count()))
-                let delta = total - lastCount
-                if delta > 0 {
-                    Task { @MainActor in
-                        guard let self = self, let s = self.statePointer else { return }
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    let delta = total - self.lastStepCount
+                    if delta > 0 {
                         self.lastStepCount = total
-                        h8_inject_steps(s, UInt32(delta))
-                        self.steps = h8_get_steps(s)
-                        self.lifetimeSteps = h8_get_lifetime_steps(s)
+                        if let s = self.statePointer {
+                            h8_inject_steps(s, UInt32(delta))
+                            self.steps = h8_get_steps(s)
+                            self.lifetimeSteps = h8_get_lifetime_steps(s)
+                        }
                     }
                 }
                 completionHandler()
             }
-            self?.healthStore.execute(innerQuery)
+            store.execute(innerQuery)
         }
         if let q = observerQuery {
             healthStore.execute(q)
