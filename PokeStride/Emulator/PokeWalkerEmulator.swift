@@ -23,6 +23,9 @@ class PokeWalkerEmulator: ObservableObject {
     private nonisolated(unsafe) var statePointer: UnsafeMutablePointer<H8State>?
     private var renderTimer: Timer?
     private var subClockTimer: Timer?
+    // Frame dedup to reduce double-buffer jitter from h8_render_lcd
+    private var lastPixels: [UInt32] = []
+    private var renderSkipCounter: Int = 0
 
     // MARK: - Audio
     private nonisolated(unsafe) var audioEngine: AVAudioEngine?
@@ -39,6 +42,8 @@ class PokeWalkerEmulator: ObservableObject {
     // MARK: - ROM & EEPROM
     private var romData: Data?
     private var eepromData: Data?
+    /// Whether a valid eeprom has been loaded (by user import or WiFi transfer)
+    @Published var hasEEPROM = false
 
     // MARK: - Colored Sprites
     private let sprites = ColoredSprites.shared
@@ -70,6 +75,9 @@ class PokeWalkerEmulator: ObservableObject {
         loadBundledAssets()
     }
 
+    /// Whether the user has imported an EEPROM file
+    var needsEEPROMImport: Bool { !hasEEPROM }
+
     deinit {
         if let ptr = statePointer {
             ptr.deinitialize(count: 1)
@@ -81,22 +89,18 @@ class PokeWalkerEmulator: ObservableObject {
     // MARK: - Asset Loading
 
     private func loadBundledAssets() {
+        // Load ROM from bundle (required — ships with the app)
         if let url = Bundle.main.url(forResource: "pwflash", withExtension: "rom", subdirectory: "Data") {
             romData = try? Data(contentsOf: url)
         } else if let url = Bundle.main.url(forResource: "pwflash", withExtension: "rom") {
             romData = try? Data(contentsOf: url)
         }
 
+        // Only load EEPROM if the user has previously saved one
         let eepromPath = documentsDirectory.appendingPathComponent("pweep.rom")
         if FileManager.default.fileExists(atPath: eepromPath.path) {
             eepromData = try? Data(contentsOf: eepromPath)
-        } else if let url = Bundle.main.url(forResource: "pweep", withExtension: "rom", subdirectory: "Data") {
-            eepromData = try? Data(contentsOf: url)
-        } else if let url = Bundle.main.url(forResource: "pweep", withExtension: "rom") {
-            eepromData = try? Data(contentsOf: url)
-        } else {
-            eepromData = Data(count: 65536)
-            eepromData?.replaceSubrange(0..<8, with: "nintendo".data(using: .ascii)!)
+            hasEEPROM = true
         }
 
         if let eeprom = eepromData, eeprom.count >= 0x170 {
@@ -105,6 +109,32 @@ class PokeWalkerEmulator: ObservableObject {
         }
 
         sprites.loadFromBundle()
+    }
+
+    /// Import an eeprom.bin file from user-selected URL.
+    /// Saves a copy to Documents/pweep.rom for persistence.
+    func importEEPROM(from url: URL) {
+        guard let data = try? Data(contentsOf: url) else {
+            print("ERROR: Could not read eeprom file")
+            return
+        }
+        guard data.count >= Int(H8_EEPROM_SIZE) else {
+            print("ERROR: eeprom file too small (\(data.count) bytes, need \(Int(H8_EEPROM_SIZE)))")
+            return
+        }
+        let trimmed = data.prefix(Int(H8_EEPROM_SIZE))
+        eepromData = trimmed
+        // Persist to Documents
+        try? trimmed.write(to: documentsDirectory.appendingPathComponent("pweep.rom"), options: .atomic)
+        hasEEPROM = true
+        if let eeprom = eepromData, eeprom.count >= 0x170 {
+            colorMode = eeprom[Self.eepromHealthDataColorModeOffset]
+            sprites.colorMode = Int(colorMode)
+        }
+        // Hot-reload into running emulator
+        if isRunning, let s = statePointer {
+            trimmed.withUnsafeBytes { h8_load_eeprom(s, $0.bindMemory(to: UInt8.self).baseAddress) }
+        }
     }
 
     private var documentsDirectory: URL {
@@ -194,30 +224,33 @@ class PokeWalkerEmulator: ObservableObject {
 
     private func renderFrame() {
         guard isRunning, let state = statePointer else { return }
-        let w = Int(H8_LCD_WIDTH)
-        let h = Int(H8_LCD_HEIGHT)
-        var raw = [UInt32](repeating: 0, count: w * h)
-        raw.withUnsafeMutableBufferPointer { h8_render_lcd(state, $0.baseAddress) }
-        let palette = paletteForMode(colorMode)
-        var color = [UInt32](repeating: 0, count: raw.count)
-        for i in 0..<raw.count {
-            let pixel = raw[i] & 0xFF
-            let idx = pixel > 0xCC ? 0 : pixel > 0x88 ? 1 : pixel > 0x44 ? 2 : 3
-            let c = palette[idx]
-            let red = UInt32(c.r) << 16
-            let grn = UInt32(c.g) << 8
-            let blu = UInt32(c.b)
-            color[i] = red | grn | blu | 0xFF000000
-        }
-        // Use Data copy + CGDataProvider so the CGImage owns its backing store
-        let pixelData = Data(bytes: color, count: color.count * MemoryLayout<UInt32>.size)
+        let w = Int(H8_LCD_WIDTH)   // 96
+        let h = Int(H8_LCD_HEIGHT)  // 64
+        var pixels = [UInt32](repeating: 0, count: w * h)
+        // h8_render_lcd outputs BGRA8 pixels (0xFFRRGGBB in memory as BB GG RR FF).
+        // It also toggles currentBuffer ^= 1 which causes jitter at 60fps.
+        // We solve the jitter by only updating the CGImage every N frames.
+        pixels.withUnsafeMutableBufferPointer { h8_render_lcd(state, $0.baseAddress) }
+        // Count unchanged pixels to detect if the LCD actually updated.
+        let unchanged = pixels.allSatisfy { $0 == pixels[0] } || pixels == lastPixels
+        lastPixels = pixels
+        renderSkipCounter += 1
+        // Only create a new CGImage every 4 frames (~15fps) to reduce
+        // double-buffer flicker from the C code's currentBuffer toggle.
+        guard !unchanged || renderSkipCounter >= 4 else { return }
+        renderSkipCounter = 0
+        let pixelData = Data(bytes: pixels, count: pixels.count * MemoryLayout<UInt32>.size)
         guard let provider = CGDataProvider(data: pixelData as CFData) else { return }
         let cs = CGColorSpaceCreateDeviceRGB()
+        // H8_GRAY values are 0xFFRRGGBB. In little-endian memory: BB GG RR FF.
+        // byteOrder32Little + noneSkipFirst means the MSB (alpha=0xFF) is skipped.
         let img = CGImage(
             width: w, height: h,
             bitsPerComponent: 8, bitsPerPixel: 32,
             bytesPerRow: w * 4, space: cs,
-            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue),
+            bitmapInfo: CGBitmapInfo(rawValue:
+                CGBitmapInfo.byteOrder32Little.rawValue |
+                CGImageAlphaInfo.noneSkipFirst.rawValue),
             provider: provider, decode: nil,
             shouldInterpolate: false, intent: .defaultIntent)
         if let img = img { self.lcdFrame = img }
@@ -427,11 +460,12 @@ class PokeWalkerEmulator: ObservableObject {
     }
 
     func resetEEPROM() {
-        eepromData = Data(count: 65536)
-        eepromData?.replaceSubrange(0..<8, with: "nintendo".data(using: .ascii)!)
-        if isRunning, let s = statePointer {
-            eepromData?.withUnsafeBytes { h8_load_eeprom(s, $0.bindMemory(to: UInt8.self).baseAddress) }
-        }
+        eepromData = nil
+        hasEEPROM = false
+        // Remove saved file
+        let path = documentsDirectory.appendingPathComponent("pweep.rom")
+        try? FileManager.default.removeItem(at: path)
+        if isRunning { stop() }
     }
 
     // MARK: - Network Transfer (matches PKSM WirelessTransfer protocol)

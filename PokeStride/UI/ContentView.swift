@@ -1,9 +1,12 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var emulator: PokeWalkerEmulator
     @State private var showSettings = false
     @State private var showNetwork = false
+    @State private var showFileImporter = false
+    @State private var importError: String?
     
     var body: some View {
         ZStack {
@@ -18,24 +21,11 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
             
-            VStack(spacing: 24) {
-                // Header
-                headerView
-                
-                // LCD Display
-                lcdDisplay
-                
-                // Stats bar
-                statsBar
-                
-                // Virtual buttons
-                buttonPad
-                
-                // Bottom controls
-                bottomControls
+            if emulator.needsEEPROMImport {
+                importScreen
+            } else {
+                mainUI
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 10)
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
@@ -45,14 +35,113 @@ struct ContentView: View {
             NetworkView()
                 .environmentObject(emulator)
         }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [
+                UTType(filenameExtension: "bin") ?? .data,
+                UTType(filenameExtension: "rom") ?? .data,
+                .data
+            ],
+            allowsMultipleSelection: false
+        ) { result in
+            handleImport(result)
+        }
         .onAppear {
-            if !emulator.isRunning {
+            if emulator.hasEEPROM && !emulator.isRunning {
                 emulator.start()
             }
         }
         .onDisappear {
             emulator.saveEEPROM()
         }
+    }
+    
+    // MARK: - Import Screen
+    
+    private var importScreen: some View {
+        VStack(spacing: 32) {
+            Spacer()
+            
+            // Icon
+            Image(systemName: "externaldrive.badge.checkmark")
+                .font(.system(size: 64))
+                .foregroundStyle(.cyan.opacity(0.8))
+            
+            VStack(spacing: 12) {
+                Text("Import Your Save")
+                    .font(.title2.bold())
+                    .foregroundStyle(.white)
+                
+                Text("PokéStride needs your PokéWalker EEPROM save file to run. Import your `eeprom.bin` or `pweep.rom` from the HGSS save.")
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+            
+            if let err = importError {
+                Text(err)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.red.opacity(0.8))
+                    .padding(.horizontal, 40)
+                    .multilineTextAlignment(.center)
+            }
+            
+            Button {
+                showFileImporter = true
+            } label: {
+                Label("Import eeprom.bin", systemImage: "doc.badge.plus")
+                    .font(.system(.body.weight(.semibold), design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 14)
+                    .background(.cyan.opacity(0.8))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            
+            Spacer()
+            
+            // Network transfer option
+            VStack(spacing: 8) {
+                Text("— or —")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.3))
+                
+                Button {
+                    showNetwork = true
+                } label: {
+                    Label("Transfer from 3DS via WiFi", systemImage: "wifi")
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.bottom, 40)
+        }
+    }
+    
+    // MARK: - Main UI
+    
+    private var mainUI: some View {
+        VStack(spacing: 24) {
+            // Header
+            headerView
+            
+            // LCD Display
+            lcdDisplay
+            
+            // Stats bar
+            statsBar
+            
+            // Virtual buttons
+            buttonPad
+            
+            // Bottom controls
+            bottomControls
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
     }
     
     // MARK: - Header
@@ -94,43 +183,46 @@ struct ContentView: View {
     // MARK: - LCD Display
     
     private var lcdDisplay: some View {
-        VStack(spacing: 0) {
-            // LCD frame with Liquid Glass effect
+        GeometryReader { geo in
+            let availableWidth = geo.size.width - 24  // padding
+            let aspectRatio = Double(H8_LCD_WIDTH) / Double(H8_LCD_HEIGHT)  // 96/64 = 1.5
+            let displayHeight = availableWidth / aspectRatio
+            
             ZStack {
-                // Outer bezel
                 RoundedRectangle(cornerRadius: 16)
                     .fill(.ultraThinMaterial)
-                    .background(.ultraThinMaterial)
-                    .frame(height: 280)
                 
-                // LCD screen
                 if let frame = emulator.lcdFrame {
                     Image(frame, scale: 1, orientation: .up, label: Text("LCD"))
                         .resizable()
                         .interpolation(.none)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: 288, height: 192)
+                        .frame(
+                            width: min(availableWidth, displayHeight * aspectRatio),
+                            height: min(displayHeight, availableWidth / aspectRatio)
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .padding(8)
                 } else {
-                    // Placeholder when emulator isn't running
                     ZStack {
                         Color(red: 0.7, green: 0.75, blue: 0.6)
-                        Text("No ROM")
+                        Text("Loading…")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.black.opacity(0.5))
                     }
+                    .frame(
+                        width: min(availableWidth, displayHeight * aspectRatio),
+                        height: min(displayHeight, availableWidth / aspectRatio)
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(8)
                 }
             }
         }
-        .background(.ultraThinMaterial)
-    }    // MARK: - Stats Bar
-
+        .frame(height: 220)
+    }
+    
+    // MARK: - Stats Bar
+    
     private var statsBar: some View {
         HStack(spacing: 12) {
-            // Color mode toggle (picowalker pw_color_mode)
             Button {
                 withAnimation(.easeOut(duration: 0.2)) {
                     let next = (emulator.colorMode + 1) % 4
@@ -174,7 +266,6 @@ struct ContentView: View {
     
     private var buttonPad: some View {
         HStack(spacing: 40) {
-            // LEFT button
             Button {
                 withAnimation(.easeOut(duration: 0.1)) {
                     emulator.pressLeft()
@@ -188,7 +279,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             
-            // ENTER button (center)
             Button {
                 withAnimation(.easeOut(duration: 0.1)) {
                     emulator.pressEnter()
@@ -202,7 +292,6 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             
-            // RIGHT button
             Button {
                 withAnimation(.easeOut(duration: 0.1)) {
                     emulator.pressRight()
@@ -261,11 +350,42 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             
+            Button {
+                showFileImporter = true
+            } label: {
+                Label("Import", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(.ultraThinMaterial)
+            }
+            .buttonStyle(.plain)
+            
             Spacer()
             
             Text("v1.0")
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.3))
+        }
+    }
+    
+    // MARK: - Import Handler
+    
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            // Security-scoped access
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            emulator.importEEPROM(from: url)
+            // Auto-start after import
+            if emulator.hasEEPROM && !emulator.isRunning {
+                emulator.start()
+            }
+        case .failure(let error):
+            importError = "Import failed: \(error.localizedDescription)"
         }
     }
 }
