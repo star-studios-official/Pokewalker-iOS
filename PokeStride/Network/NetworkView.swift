@@ -107,7 +107,7 @@ struct NetworkView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(16)
-        .background(.ultraThinMaterial))
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Connection Form
@@ -166,7 +166,7 @@ struct NetworkView: View {
             .buttonStyle(.plain)
         }
         .padding(16)
-        .background(.ultraThinMaterial))
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Transfer Controls
@@ -199,7 +199,7 @@ struct NetworkView: View {
                 }
                 .foregroundStyle(.white)
                 .padding(12)
-                .background(.ultraThinMaterial))
+                .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
             .disabled(isTransferring)
@@ -225,13 +225,13 @@ struct NetworkView: View {
                 }
                 .foregroundStyle(.white)
                 .padding(12)
-                .background(.ultraThinMaterial))
+                .background(.ultraThinMaterial)
             }
             .buttonStyle(.plain)
             .disabled(isTransferring)
         }
         .padding(16)
-        .background(.ultraThinMaterial))
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Protocol Info

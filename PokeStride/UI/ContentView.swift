@@ -99,7 +99,7 @@ struct ContentView: View {
                 // Outer bezel
                 RoundedRectangle(cornerRadius: 16)
                     .fill(.ultraThinMaterial)
-                    .background(.ultraThinMaterial))
+                    .background(.ultraThinMaterial)
                     .frame(height: 280)
                 
                 // LCD screen
@@ -124,7 +124,7 @@ struct ContentView: View {
                 }
             }
         }
-        .background(.ultraThinMaterial))
+        .background(.ultraThinMaterial)
     }    // MARK: - Stats Bar
 
     private var statsBar: some View {
@@ -291,7 +291,7 @@ struct StatBadge: View {
         .frame(minWidth: 70)
         .padding(.vertical, 10)
         .padding(.horizontal, 12)
-        .background(.ultraThinMaterial))
+        .background(.ultraThinMaterial)
     }
 }
 
