@@ -358,7 +358,7 @@ class PokeWalkerEmulator: ObservableObject {
         }
     }
 
-    nonisolated private func startCMPedometerFallback() {
+    private func startCMPedometerFallback() {
         guard CMPedometer.isStepCountingAvailable() else { return }
         let startOfDay = Calendar.current.startOfDay(for: Date())
         pedometer.startUpdates(from: startOfDay) { [weak self] data, error in
@@ -409,7 +409,7 @@ class PokeWalkerEmulator: ObservableObject {
     func saveEEPROM() {
         guard let state = statePointer else { return }
         var buf = [UInt8](repeating: 0, count: Int(H8_EEPROM_SIZE))
-        buf.withUnsafeMutableBufferPointer { h8_save_eeprom(state, $0.baseAddress) }
+        _ = buf.withUnsafeMutableBufferPointer { h8_save_eeprom(state, $0.baseAddress) }
         try? Data(buf).write(to: documentsDirectory.appendingPathComponent("pweep.rom"))
     }
 
