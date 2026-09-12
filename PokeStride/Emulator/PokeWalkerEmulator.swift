@@ -23,9 +23,8 @@ class PokeWalkerEmulator: ObservableObject {
     private nonisolated(unsafe) var statePointer: UnsafeMutablePointer<H8State>?
     private var renderTimer: Timer?
     private var subClockTimer: Timer?
-    // Frame dedup to reduce double-buffer jitter from h8_render_lcd
+    // Frame dedup — only update CGImage when pixels actually change
     private var lastPixels: [UInt32] = []
-    private var renderSkipCounter: Int = 0
 
     // MARK: - Audio
     private nonisolated(unsafe) var audioEngine: AVAudioEngine?
@@ -39,11 +38,45 @@ class PokeWalkerEmulator: ObservableObject {
     private let healthStore = HKHealthStore()
     private var observerQuery: HKObserverQuery?
 
+    // MARK: - Logging
+    private var logFileHandle: FileHandle?
+    private var logFileURL: URL {
+        documentsDirectory.appendingPathComponent("log.txt")
+    }
+    
+    func log(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(message)\n"
+        if let data = line.data(using: .utf8) {
+            logFileHandle?.write(data)
+        }
+        print(message)
+    }
+    
+    private func openLogFile() {
+        if !FileManager.default.fileExists(atPath: logFileURL.path) {
+            FileManager.default.createFile(atPath: logFileURL.path, contents: nil)
+        }
+        logFileHandle = FileHandle(forWritingAtPath: logFileURL.path)
+        logFileHandle?.seekToEndOfFile()
+        log("=== PokeStride launched ===")
+        log("Documents dir: \(documentsDirectory.path)")
+    }
+    
+    private func closeLogFile() {
+        log("=== PokeStride closing ===")
+        logFileHandle?.synchronizeFile()
+        logFileHandle?.closeFile()
+        logFileHandle = nil
+    }
+
     // MARK: - ROM & EEPROM
     private var romData: Data?
     private var eepromData: Data?
     /// Whether a valid eeprom has been loaded (by user import or WiFi transfer)
     @Published var hasEEPROM = false
+    /// Whether a valid ROM has been found in the bundle
+    @Published var hasROM = false
 
     // MARK: - Colored Sprites
     private let sprites = ColoredSprites.shared
@@ -72,6 +105,7 @@ class PokeWalkerEmulator: ObservableObject {
     static let eepromHealthDataColorModeOffset = 0x016E
 
     init() {
+        openLogFile()
         loadBundledAssets()
     }
 
@@ -79,11 +113,13 @@ class PokeWalkerEmulator: ObservableObject {
     var needsEEPROMImport: Bool { !hasEEPROM }
 
     deinit {
+        stopStepCounting()
         if let ptr = statePointer {
             ptr.deinitialize(count: 1)
             ptr.deallocate()
         }
         audioEngine?.stop()
+        closeLogFile()
     }
 
     // MARK: - Asset Loading
@@ -92,8 +128,15 @@ class PokeWalkerEmulator: ObservableObject {
         // Load ROM from bundle (required — ships with the app)
         if let url = Bundle.main.url(forResource: "pwflash", withExtension: "rom", subdirectory: "Data") {
             romData = try? Data(contentsOf: url)
+            hasROM = true
+            log("ROM loaded from Data/pwflash.rom: \(romData?.count ?? 0) bytes")
         } else if let url = Bundle.main.url(forResource: "pwflash", withExtension: "rom") {
             romData = try? Data(contentsOf: url)
+            hasROM = true
+            log("ROM loaded from pwflash.rom: \(romData?.count ?? 0) bytes")
+        } else {
+            log("ERROR: No ROM found in bundle!")
+            hasROM = false
         }
 
         // Only load EEPROM if the user has previously saved one
@@ -101,25 +144,31 @@ class PokeWalkerEmulator: ObservableObject {
         if FileManager.default.fileExists(atPath: eepromPath.path) {
             eepromData = try? Data(contentsOf: eepromPath)
             hasEEPROM = true
+            log("EEPROM loaded from Documents: \(eepromData?.count ?? 0) bytes")
+        } else {
+            log("No saved EEPROM found — user must import")
         }
 
         if let eeprom = eepromData, eeprom.count >= 0x170 {
             colorMode = eeprom[Self.eepromHealthDataColorModeOffset]
             sprites.colorMode = Int(colorMode)
+            log("Color mode from EEPROM: \(colorMode)")
         }
 
         sprites.loadFromBundle()
+        log("Assets loaded. ROM=\(hasROM), EEPROM=\(hasEEPROM)")
     }
 
     /// Import an eeprom.bin file from user-selected URL.
     /// Saves a copy to Documents/pweep.rom for persistence.
     func importEEPROM(from url: URL) {
+        log("Importing EEPROM from \(url.lastPathComponent)")
         guard let data = try? Data(contentsOf: url) else {
-            print("ERROR: Could not read eeprom file")
+            log("ERROR: Could not read eeprom file")
             return
         }
         guard data.count >= Int(H8_EEPROM_SIZE) else {
-            print("ERROR: eeprom file too small (\(data.count) bytes, need \(Int(H8_EEPROM_SIZE)))")
+            log("ERROR: eeprom file too small (\(data.count) bytes, need \(Int(H8_EEPROM_SIZE)))")
             return
         }
         let trimmed = data.prefix(Int(H8_EEPROM_SIZE))
@@ -131,9 +180,11 @@ class PokeWalkerEmulator: ObservableObject {
             colorMode = eeprom[Self.eepromHealthDataColorModeOffset]
             sprites.colorMode = Int(colorMode)
         }
+        log("EEPROM imported: \(trimmed.count) bytes, saved to Documents")
         // Hot-reload into running emulator
         if isRunning, let s = statePointer {
             trimmed.withUnsafeBytes { h8_load_eeprom(s, $0.bindMemory(to: UInt8.self).baseAddress) }
+            log("Hot-reloaded EEPROM into running emulator")
         }
     }
 
@@ -146,27 +197,41 @@ class PokeWalkerEmulator: ObservableObject {
     func start() {
         guard !isRunning else { return }
         guard let rom = romData else {
-            print("ERROR: No ROM loaded (pwflash.rom not found in bundle)")
+            log("ERROR: No ROM loaded — cannot start")
             return
         }
+        log("Starting emulator: ROM=\(rom.count) bytes, EEPROM=\(eepromData?.count ?? 0) bytes")
 
-        // Allocate state on heap — stable pointer for the audio render block
+        // C-side logging is no-op (g_logFile = NULL)
+        // All logging happens via Swift log() method above
+
+        // Allocate state on heap
         let ptr = UnsafeMutablePointer<H8State>.allocate(capacity: 1)
         ptr.initialize(to: H8State())
         statePointer = ptr
 
         rom.withUnsafeBytes { romPtr in
-            eepromData?.withUnsafeBytes { eepromPtr in
-                h8_init(ptr,
-                        romPtr.bindMemory(to: UInt8.self).baseAddress,
-                        eepromPtr.bindMemory(to: UInt8.self).baseAddress)
+            let romBase = romPtr.bindMemory(to: UInt8.self).baseAddress
+            if let eeprom = eepromData {
+                eeprom.withUnsafeBytes { eepromPtr in
+                    let eepromBase = eepromPtr.bindMemory(to: UInt8.self).baseAddress
+                    h8_init(ptr, romBase, eepromBase)
+                }
+            } else {
+                h8_init(ptr, romBase, nil)
             }
         }
+
+        // Log initial state
+        let entry = h8_get_entry(ptr)
+        log("h8_init complete: entry=0x\(String(entry, radix: 16)), PC=0x\(String(ptr.pointee.pc, radix: 16))")
+        log("Initial steps: today=\(h8_get_steps(ptr)), lifetime=\(h8_get_lifetime_steps(ptr))")
 
         isRunning = true
         setupAudio()
         startTimers()
         startStepCounting()
+        log("Emulator started")
     }
 
     func stop() {
@@ -204,6 +269,8 @@ class PokeWalkerEmulator: ObservableObject {
 
     // MARK: - Emulation Loop
 
+    private var frameCount = 0
+    
     private func runSubClockBatch() {
         guard isRunning, let state = statePointer else { return }
         let ticks = 1024
@@ -220,6 +287,10 @@ class PokeWalkerEmulator: ObservableObject {
         self.lifetimeSteps = h8_get_lifetime_steps(state)
         self.watts = h8_get_watts(state)
         self.isSleeping = h8_is_sleeping(state)
+        frameCount += 1
+        if frameCount % 320 == 0 { // Log every ~10 seconds
+            log("Emu: steps=\(steps), life=\(lifetimeSteps), watts=\(watts), sleeping=\(isSleeping), pc=0x\(String(state.pointee.pc, radix: 16))")
+        }
     }
 
     private func renderFrame() {
@@ -227,19 +298,13 @@ class PokeWalkerEmulator: ObservableObject {
         let w = Int(H8_LCD_WIDTH)   // 96
         let h = Int(H8_LCD_HEIGHT)  // 64
         var pixels = [UInt32](repeating: 0, count: w * h)
-        // h8_render_lcd outputs BGRA8 pixels (0xFFRRGGBB in memory as BB GG RR FF).
-        // It also toggles currentBuffer ^= 1 which causes jitter at 60fps.
+        // h8_render_lcd now uses LCD GDDRAM directly (no double-buffer jitter).
         // We solve the jitter by only updating the CGImage every N frames.
         pixels.withUnsafeMutableBufferPointer { h8_render_lcd(state, $0.baseAddress) }
-        // Count unchanged pixels to detect if the LCD actually updated.
-        let unchanged = pixels.allSatisfy { $0 == pixels[0] } || pixels == lastPixels
+        // Only update if pixels actually changed
+        guard pixels != lastPixels else { return }
         lastPixels = pixels
-        renderSkipCounter += 1
-        // Only create a new CGImage every 4 frames (~15fps) to reduce
-        // double-buffer flicker from the C code's currentBuffer toggle.
-        guard !unchanged || renderSkipCounter >= 4 else { return }
-        renderSkipCounter = 0
-        let pixelData = Data(bytes: pixels, count: pixels.count * MemoryLayout<UInt32>.size)
+        let pixelData = Data(bytes: pixels, count: w * h * MemoryLayout<UInt32>.size)
         guard let provider = CGDataProvider(data: pixelData as CFData) else { return }
         let cs = CGColorSpaceCreateDeviceRGB()
         // H8_GRAY values are 0xFFRRGGBB. In little-endian memory: BB GG RR FF.

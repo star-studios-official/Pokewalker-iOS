@@ -72,8 +72,8 @@ struct ContentView: View {
                     .font(.title2.bold())
                     .foregroundStyle(.white)
                 
-                Text("PokéStride needs your PokéWalker EEPROM save file to run. Import your `eeprom.bin` or `pweep.rom` from the HGSS save.")
-                    .font(.system(.body, design: .rounded))
+                Text("PokéStride needs your PokéWalker EEPROM save file to run. Import your `pweep.rom` or `eeprom.bin` — it's the save data from the PokéWalker accessory in HeartGold/SoulSilver.")
+                    .font(.system(.caption, design: .rounded))
                     .foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
@@ -376,6 +376,7 @@ struct ContentView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
+            emulator.log("File selected: \(url.lastPathComponent)")
             // Security-scoped access
             let accessing = url.startAccessingSecurityScopedResource()
             defer { if accessing { url.stopAccessingSecurityScopedResource() } }

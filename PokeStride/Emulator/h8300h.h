@@ -3,20 +3,26 @@
  * h8300h.h — H8/300H Tiny CPU emulator core for PokéWalker
  *
  * Ported from pokestride (3DS) by stripping all platform-specific code
- * (3DS I2C, IR hardware, NDSP audio, citro2d rendering) and replacing
- * them with callback interfaces.
+ * and replacing them with callback interfaces.
  *
  * The PokéWalker uses a Renesas H8/38606 (H8/300H Tiny variant):
  *   - 3.6864 MHz system clock, 32.768 KHz sub-clock
- *   - 8 x 32-bit registers ER0-ER7 (ER7 = SP), accessible as 16-bit (r/e) or 8-bit (h/l)
+ *   - 8 x 32-bit registers ER0-ER7 (ER7 = SP)
  *   - 64 KB address space: ROM 0x0000-0xBFFF, MMIO 0xF020-0xFFFF, RAM 0xF780-0xFF7F
  *   - Big-endian instruction encoding
- *   - Condition code register (CCR): I H U N Z V C
+ *
+ * SPI peripherals (all via SSU at 0xF0E0-0xF0EB):
+ *   - LCD (SSD1854): CS = PDR1 bit 0, D/C = PDR1 bit 1
+ *   - EEPROM (M95512): CS = PDR1 bit 2
+ *   - Accelerometer (BMA150): CS = PDR9 bit 0
+ *
+ * License: GPLv3 (same as pokestride)
  */
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,7 +34,7 @@ extern "C" {
 #define H8_ROM_SIZE        0xC000    /* 49152 bytes ROM */
 #define H8_RAM_START       0xF780
 #define H8_RAM_END         0xFF80
-#define H8_RAM_SIZE        (H8_RAM_END - H8_RAM_START)  /* 2048 bytes */
+#define H8_RAM_SIZE        (H8_RAM_END - H8_RAM_START)
 #define H8_EEPROM_SIZE     0x10000   /* 64 KB */
 
 #define H8_LCD_WIDTH       96
@@ -37,38 +43,27 @@ extern "C" {
 #define H8_LCD_MEM_HEIGHT  176
 #define H8_LCD_MEM_SIZE    (H8_LCD_MEM_WIDTH * H8_LCD_MEM_HEIGHT / 4)
 
-#define H8_SUB_CLOCK       32768     /* 32.768 KHz sub-clock */
-#define H8_SYSTEM_CLOCK    3686400   /* 3.6864 MHz */
+#define H8_SUB_CLOCK       32768
+#define H8_SYSTEM_CLOCK    3686400
 
 /* Button bits (PORT B) */
 #define H8_BTN_ENTER       (1 << 0)
 #define H8_BTN_LEFT        (1 << 2)
 #define H8_BTN_RIGHT       (1 << 4)
 
-/* Palette: 4-level grayscale (white → black) */
-#define H8_GRAY_0  0xFF333333u  /* lightest */
-#define H8_GRAY_1  0xFF666666u
-#define H8_GRAY_2  0xFF999999u
-#define H8_GRAY_3  0xFFCCCCCCu  /* darkest */
+/* Palette: 4-level grayscale (dark on light) */
+#define H8_GRAY_0  0xFFFFFFFFu  /* white/lightest */
+#define H8_GRAY_1  0xFFBBBBBBu
+#define H8_GRAY_2  0xFF555555u
+#define H8_GRAY_3  0xFF000000u  /* black/darkest */
 
-/* ── Callback interfaces (platform-specific) ────────────────────────────── */
+/* ── Callback interfaces ────────────────────────────────────────────────── */
 
-/* Called when the LCD framebuffer is ready to be displayed.
- * videoBuffer is 96*64 = 6144 uint32_t pixels in BGRA8 format.
- * Called once per video frame (when the ROM does a page flip). */
 typedef void (*lcd_frame_callback)(const uint32_t *videoBuffer, void *userdata);
-
-/* Called when Timer W produces an audio event.
- * graValue: Timer W GRA register (determines frequency: 32768/(2*GRA) Hz)
- * volume: 0=off, 1=half, 2=full
- * timerActive: whether Timer W is running */
 typedef void (*audio_event_callback)(uint16_t graValue, uint8_t volume, bool timerActive, void *userdata);
-
-/* Called when steps should be injected (from HealthKit pedometer).
- * Returns the number of steps actually added. */
 typedef uint32_t (*step_query_callback)(void *userdata);
 
-/* ── Register reference types (used internally) ─────────────────────────── */
+/* ── Register reference types (internal) ────────────────────────────────── */
 
 typedef struct { uint8_t idx; char loOrHiReg; uint8_t *ptr; } RegRef8;
 typedef struct { uint8_t idx; char loOrHiReg; uint16_t *ptr; } RegRef16;
@@ -77,107 +72,96 @@ typedef struct { uint8_t idx; uint32_t *ptr; } RegRef32;
 /* ── CCR flags ──────────────────────────────────────────────────────────── */
 
 typedef struct {
-    bool I;   /* Interrupt mask */
-    bool UI;  /* User interrupt */
-    bool H;   /* Half-carry */
-    bool U;   /* User bit */
-    bool N;   /* Negative */
-    bool Z;   /* Zero */
-    bool V;   /* Overflow */
-    bool C;   /* Carry */
+    bool I, UI, H, U, N, Z, V, C;
 } H8Flags;
 
-/* ── Peripheral state ───────────────────────────────────────────────────── */
+/* ── SCI3 (IrDA serial) ────────────────────────────────────────────────── */
 
-/* SCI3 (IrDA serial) — only used for ROM's own TX/RX path */
 typedef struct {
-    uint8_t *SMR3;   /* 0xFF98 */
-    uint8_t *BRR3;   /* 0xFF99 */
-    uint8_t *SCR3;   /* 0xFF9A */
-    uint8_t *TDR3;   /* 0xFF9B */
-    uint8_t *SSR3;   /* 0xFF9C */
-    uint8_t *RDR3;   /* 0xFF9D */
-    uint8_t *IrCR;   /* 0xFFA7 */
+    uint8_t *SMR3, *BRR3, *SCR3, *TDR3, *SSR3, *RDR3, *IrCR;
     uint32_t txCountdown;
     uint8_t  txPending;
     bool     txHasPending;
     uint8_t  rxBuf[256];
-    uint16_t rxLen;
-    uint16_t rxPos;
-    uint32_t rxCountdown;
-    uint32_t txIdleCountdown;
+    uint16_t rxLen, rxPos;
+    uint32_t rxCountdown, txIdleCountdown;
     uint8_t  lastReadSSR3;
 } H8SCI3;
 
-/* LCD controller (SSD1854) */
+/* ── LCD controller (SSD1854) — SPI-connected ───────────────────────────── */
+
 typedef struct {
-    uint8_t *memory;      /* GDDRAM (128 pages × 128 columns × 2 bitplanes) */
+    /* Internal GDDRAM: 128 pages × 128 columns, each column is 1 byte (8 bits = 8 rows) */
+    uint8_t  ram[128][128];  /* ram[page][column] */
+    uint8_t  page_address;
+    uint8_t  column_address;
+    uint8_t  display_start_line;
     uint8_t  contrast;
-    uint8_t  currentColumn;
-    uint8_t  currentPage;
-    uint8_t  currentByte;
-    bool     currentBuffer;
-    uint8_t  displayStartLine;
-    bool     startLineSet;
-    bool     startLineActive;
+    uint8_t  mux_ratio;
+    bool     display_on;
+    bool     inverse_display;
+    bool     entire_display_on;
+    bool     segment_remap;
+    /* Command parser state */
+    uint8_t  cmdBuf[4];
+    uint8_t  cmdBufOff;
+    uint8_t  cmdExpectedArgs;
+    bool     dataMode;  /* false = command, true = data */
 } H8LCD;
 
-/* Timer B1 */
+/* ── EEPROM (M95512 SPI EEPROM) ─────────────────────────────────────────── */
+
+typedef struct {
+    uint8_t  mem[H8_EEPROM_SIZE];  /* 64KB EEPROM data — own buffer, not overlapping ROM! */
+    uint8_t  status;               /* WIP, WEL, BP0, BP1 etc. */
+    uint8_t  buf[10];
+    int      buf_off;
+    uint8_t  next_read;
+} H8EEPROM;
+
+/* ── SSU (Synchronous Serial Unit — SPI master) ─────────────────────────── */
+
+typedef struct {
+    uint8_t sscrh, sscrl, ssmr, sser, sssr;
+    uint8_t ssrdr, sstdr;
+    uint8_t shiftReg;      /* shift register for SPI transfer */
+    bool    shiftValid;    /* true when shiftReg has valid data from slave */
+} H8SSU;
+
+/* ── Accelerometer (BMA150, simplified) ──────────────────────────────────── */
+
+typedef struct {
+    uint8_t  memory[256];
+    struct {
+        uint8_t address, offset, state;
+    } buffer;
+} H8Accel;
+
+/* ── Timer B1 ───────────────────────────────────────────────────────────── */
+
 typedef struct {
     bool    on;
     uint8_t TLBvalue;
-    uint8_t *TMB1;
-    uint8_t *TCB1;
+    uint8_t *TMB1, *TCB1;
 } H8TimerB;
 
-/* Timer W (audio PWM) */
+/* ── Timer W (audio PWM) ────────────────────────────────────────────────── */
+
 typedef struct {
     bool      on;
-    uint8_t  *TMRW;
-    uint8_t  *TCRW;
-    uint8_t  *TIERW;
-    uint8_t  *TSRW;
-    uint8_t  *TIOR0;
-    uint8_t  *TIOR1;
-    uint16_t *TCNT;
-    uint16_t *GRA;
-    uint16_t *GRB;
-    uint16_t *GRC;
-    uint16_t *GRD;
+    uint8_t  *TMRW, *TCRW, *TIERW, *TSRW, *TIOR0, *TIOR1;
+    uint16_t *TCNT, *GRA, *GRB, *GRC, *GRD;
 } H8TimerW;
-
-/* EEPROM (SPI interface, 64 KB M95512) */
-typedef struct {
-    uint8_t *memory;
-    uint8_t  status;
-    struct {
-        uint8_t  hiAddress;
-        uint8_t  loAddress;
-        uint8_t  state;   /* 0=empty, 1=status, 2=addr_hi, 3=addr_lo, 4=bytes */
-        uint16_t offset;
-        uint8_t  isWrite;
-    } buffer;
-} H8EEPROM;
-
-/* Accelerometer (BMA150, simplified) */
-typedef struct {
-    uint8_t *memory;
-    struct {
-        uint8_t address;
-        uint8_t offset;
-        uint8_t state;
-    } buffer;
-} H8Accel;
 
 /* ── Main emulator state ────────────────────────────────────────────────── */
 
 typedef struct {
     /* CPU registers */
-    uint32_t er[8];        /* ER0-ER7 (ER7 = SP) */
+    uint32_t er[8];
     H8Flags  flags;
     uint16_t pc;
 
-    /* Memory */
+    /* Memory (ROM + MMIO + RAM, NOT EEPROM) */
     uint8_t  memory[H8_MEM_SIZE];
 
     /* Peripherals */
@@ -186,18 +170,17 @@ typedef struct {
     H8TimerB  timerB;
     H8TimerW  timerW;
     H8EEPROM  eeprom;
+    H8SSU     ssu;
     H8Accel   accel;
 
-    /* Interrupt state */
-    uint8_t  *IRQ_IENR1;
-    uint8_t  *IRQ_IENR2;
-    uint8_t  *IRQ_IRR1;
-    uint8_t  *IRQ_IRR2;
-    uint8_t  *RTCFLG;
-    uint8_t  *CKSTPR1;
-    uint8_t  *CKSTPR2;
+    /* Chip select state (from PORT1 writes) */
+    uint8_t   pdr1;        /* PORT1 output latch */
+    uint8_t   pdr9;        /* PORT9 output latch */
 
-    /* Interrupt context save (nested interrupts) */
+    /* Interrupt state */
+    uint8_t  *IRQ_IENR1, *IRQ_IENR2, *IRQ_IRR1, *IRQ_IRR2;
+    uint8_t  *RTCFLG, *CKSTPR1, *CKSTPR2;
+
     #define H8_INT_SAVE_DEPTH 8
     uint16_t interruptSavedAddressStack[H8_INT_SAVE_DEPTH];
     H8Flags  interruptSavedFlagsStack[H8_INT_SAVE_DEPTH];
@@ -207,14 +190,12 @@ typedef struct {
 
     /* Input queue */
     uint8_t  inputBuf[32];
-    int      inputHead;
-    int      inputTail;
-    int      inputCount;
+    int      inputHead, inputTail, inputCount;
 
     /* Timing */
     uint64_t subClockCycles;
     bool     sleeping;
-    int      entry;       /* ROM entry point (read from reset vector) */
+    int      entry;
 
     /* Audio event latch */
     bool     audioEventPending;
@@ -229,72 +210,31 @@ typedef struct {
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
-/* Initialize the emulator. Loads ROM data into memory, sets up MMIO pointers,
- * reads entry point from reset vector, and configures peripheral state.
- * romData: 49152 bytes of PokéWalker ROM (pwflash.rom)
- * eepromData: 65536 bytes of EEPROM (pweep.rom), or NULL for fresh state */
 void h8_init(H8State *state, const uint8_t *romData, const uint8_t *eepromData);
-
-/* Run one instruction. Returns the number of cycles consumed.
- * Call repeatedly in a loop, passing sub-clock ticks to h8_tick_subclock(). */
-int h8_step(H8State *state);
-
-/* Tick the sub-clock (32768 Hz). Handles Timer B1 overflow and Timer W.
- * Call once per sub-clock tick (or batch multiple ticks). */
+int  h8_step(H8State *state);
 void h8_tick_subclock(H8State *state, int ticks);
-
-/* Tick the SCI3 baud rate countdowns (for byte timing).
- * Call from the main loop. */
 void h8_tick_sci3(H8State *state);
-
-/* Inject a button press (ENTER, LEFT, or RIGHT). */
 void h8_set_keys(H8State *state, uint8_t buttons);
-
-/* Inject steps from HealthKit pedometer. */
 void h8_inject_steps(H8State *state, uint32_t steps);
-
-/* Read current step count from walker RAM (0xF79C). */
 uint32_t h8_get_steps(H8State *state);
-
-/* Read lifetime steps from walker RAM (0xF780). */
 uint32_t h8_get_lifetime_steps(H8State *state);
-
-/* Read current watts from walker RAM (0xF78E). */
 uint16_t h8_get_watts(H8State *state);
-
-/* Render the LCD framebuffer into videoBuffer (96×64 uint32_t BGRA pixels). */
 void h8_render_lcd(H8State *state, uint32_t *videoBuffer);
-
-/* Save EEPROM state to buffer (must be at least 65536 bytes).
- * Returns 0 on success. */
-int h8_save_eeprom(H8State *state, uint8_t *buffer);
-
-/* Load EEPROM state from buffer. */
+int  h8_save_eeprom(H8State *state, uint8_t *buffer);
 void h8_load_eeprom(H8State *state, const uint8_t *buffer);
-
-/* Read a byte from H8 memory (for debugging). */
 uint8_t h8_read_mem(H8State *state, uint16_t addr);
-
-/* Write a byte to H8 memory (for debugging/IR injection). */
 void h8_write_mem(H8State *state, uint16_t addr, uint8_t value);
-
-/* Register callbacks. */
-void h8_set_callbacks(H8State *state,
-                       lcd_frame_callback lcd,
-                       audio_event_callback audio,
-                       step_query_callback step,
+void h8_set_callbacks(H8State *state, lcd_frame_callback lcd,
+                       audio_event_callback audio, step_query_callback step,
                        void *userdata);
 
-/* Get Timer W GRA value and volume (for audio). */
+/* Set a FILE* for emulator logging (C side). Pass NULL to disable. */
+void h8_set_log_file(FILE *f);
 uint16_t h8_get_timer_w_gra(H8State *state);
 uint8_t  h8_get_volume(H8State *state);
 bool     h8_is_timer_w_active(H8State *state);
-
-/* Check if CPU is in SLEEP mode. */
-bool h8_is_sleeping(H8State *state);
-
-/* Get the ROM entry point. */
-int h8_get_entry(H8State *state);
+bool     h8_is_sleeping(H8State *state);
+int      h8_get_entry(H8State *state);
 
 #ifdef __cplusplus
 }
