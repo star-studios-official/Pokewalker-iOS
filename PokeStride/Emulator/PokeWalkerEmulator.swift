@@ -31,12 +31,12 @@ class PokeWalkerEmulator: ObservableObject {
     private nonisolated(unsafe) var audioSourceNode: AVAudioSourceNode?
 
     // MARK: - Step Counter
-    private let pedometer = CMPedometer()
+    nonisolated(unsafe) private let pedometer = CMPedometer()
     nonisolated(unsafe) private var lastStepCount: Int = 0
     private var stepTimer: Timer?
     private var stepCountingActive = false
-    private let healthStore = HKHealthStore()
-    private var observerQuery: HKObserverQuery?
+    nonisolated(unsafe) private let healthStore = HKHealthStore()
+    nonisolated(unsafe) private var observerQuery: HKObserverQuery?
 
     // MARK: - Logging
     private var logFileHandle: FileHandle?
@@ -113,13 +113,18 @@ class PokeWalkerEmulator: ObservableObject {
     var needsEEPROMImport: Bool { !hasEEPROM }
 
     deinit {
-        stopStepCounting()
+        // deinit is nonisolated in Swift 6 — only access nonisolated(unsafe) properties
+        pedometer.stopUpdates()
+        if let q = observerQuery {
+            healthStore.stop(q)
+        }
         if let ptr = statePointer {
             ptr.deinitialize(count: 1)
             ptr.deallocate()
         }
         audioEngine?.stop()
-        closeLogFile()
+        logFileHandle?.synchronizeFile()
+        logFileHandle?.closeFile()
     }
 
     // MARK: - Asset Loading
