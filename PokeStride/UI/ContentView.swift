@@ -91,7 +91,7 @@ struct ContentView: View {
                 showFileImporter = true
             } label: {
                 Label("Import eeprom.bin", systemImage: "doc.badge.plus")
-                    .font(.system(.body.weight(.semibold), design: .rounded))
+                    .font(.system(.body, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 32)
                     .padding(.vertical, 14)
