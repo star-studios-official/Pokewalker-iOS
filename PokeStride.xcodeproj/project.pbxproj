@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -69,8 +69,6 @@
 				A10000040000000000000004 /* Emulator */,
 				A10000040000000000000005 /* Sprites */,
 				A10000040000000000000006 /* Network */,
-				A10000040000000000000007 /* Health */,
-				A10000040000000000000008 /* Resources */,
 			);
 			path = PokeStride;
 			sourceTree = "<group>";
@@ -112,20 +110,6 @@
 			path = Network;
 			sourceTree = "<group>";
 		};
-		A10000040000000000000007 /* Health */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Health;
-			sourceTree = "<group>";
-		};
-		A10000040000000000000008 /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = Resources;
-			sourceTree = "<group>";
-		};
 		A10000040000000000000010 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -161,19 +145,16 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastSwiftUpdateCheck = 2700;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					A10000050000000000000001 = {
 						CreatedOnToolsVersion = 16.0;
-						SystemCapabilities = {
-							healthkit = { enabled = 1; };
-						};
 					};
 				};
 			};
 			buildConfigurationList = A10000070000000000000002 /* Build configuration list for PBXProject "PokeStride" */;
-			compatibilityVersion = "Xcode 14.0";
+			compatibilityVersion = "Xcode 27.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -239,7 +220,7 @@
 				);
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -261,7 +242,7 @@
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
@@ -290,16 +271,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MODULE_NAME = $(PRODUCT_NAME)Internal;
 				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pokestride.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				HEADER_SEARCH_PATHS = "$(inherited)";
 			};
 			name = Debug;
 		};
@@ -322,16 +301,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MODULE_NAME = $(PRODUCT_NAME)Internal;
 				OTHER_LDFLAGS = "-ObjC";
 				PRODUCT_BUNDLE_IDENTIFIER = com.pokestride.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				HEADER_SEARCH_PATHS = "$(inherited)";
 			};
 			name = Release;
 		};
