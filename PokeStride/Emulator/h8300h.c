@@ -1650,6 +1650,9 @@ void h8_init(H8State *s, const uint8_t *romData, const uint8_t *eepromData) {
         memcpy(s->memory, romData, H8_ROM_SIZE);
     }
 
+    /* EEPROM lives in the main memory map — point eeprom.memory first */
+    s->eeprom.memory = s->memory; /* EEPROM is accessed via SPI mapped to memory */
+
     /* Load EEPROM */
     if (eepromData) {
         memcpy(s->eeprom.memory, eepromData, H8_EEPROM_SIZE);
@@ -1657,7 +1660,6 @@ void h8_init(H8State *s, const uint8_t *romData, const uint8_t *eepromData) {
         /* Initialize with "nintendo" magic marker */
         memcpy(s->eeprom.memory, "nintendo", 8);
     }
-    s->eeprom.memory = s->memory; /* EEPROM is accessed via SPI mapped to memory */
 
     /* Read entry point from reset vector */
     s->entry = (s->memory[0] << 8) | s->memory[1];
