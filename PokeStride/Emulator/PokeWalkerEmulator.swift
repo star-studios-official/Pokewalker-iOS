@@ -30,7 +30,7 @@ class PokeWalkerEmulator: ObservableObject {
 
     // MARK: - Step Counter
     private let pedometer = CMPedometer()
-    private var lastStepCount: Int = 0
+    nonisolated(unsafe) private var lastStepCount: Int = 0
     private var stepTimer: Timer?
     private var stepCountingActive = false
     private let healthStore = HKHealthStore()
@@ -358,13 +358,13 @@ class PokeWalkerEmulator: ObservableObject {
         }
     }
 
-    private func startCMPedometerFallback() {
+    nonisolated private func startCMPedometerFallback() {
         guard CMPedometer.isStepCountingAvailable() else { return }
         let startOfDay = Calendar.current.startOfDay(for: Date())
         pedometer.startUpdates(from: startOfDay) { [weak self] data, error in
-            guard let data = data, error == nil, let self = self else { return }
-            let delta = data.numberOfSteps.intValue - self.lastStepCount
-            if delta > 0 {
+            guard let data = data, error == nil else { return }
+            let delta = data.numberOfSteps.intValue - (self?.lastStepCount ?? 0)
+            if delta > 0, let self = self {
                 self.lastStepCount = data.numberOfSteps.intValue
                 Task { @MainActor in
                     guard let s = self.statePointer else { return }
