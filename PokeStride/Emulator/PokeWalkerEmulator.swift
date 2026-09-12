@@ -19,13 +19,14 @@ class PokeWalkerEmulator: ObservableObject {
     @Published var colorMode: UInt8 = 0
 
     // MARK: - C Emulator State
-    private var statePointer: UnsafeMutablePointer<H8State>?
+    // nonisolated(unsafe) required: deinit is nonisolated in Swift 6 but must clean these up
+    private nonisolated(unsafe) var statePointer: UnsafeMutablePointer<H8State>?
     private var renderTimer: Timer?
     private var subClockTimer: Timer?
 
     // MARK: - Audio
-    private var audioEngine: AVAudioEngine?
-    private var audioSourceNode: AVAudioSourceNode?
+    private nonisolated(unsafe) var audioEngine: AVAudioEngine?
+    private nonisolated(unsafe) var audioSourceNode: AVAudioSourceNode?
 
     // MARK: - Step Counter
     private let pedometer = CMPedometer()
