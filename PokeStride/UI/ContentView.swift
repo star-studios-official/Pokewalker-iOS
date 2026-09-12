@@ -61,7 +61,7 @@ struct ContentView: View {
         HStack {
             VStack(alignment: .leading) {
                 Text("PokéWalker")
-                    .font(.system(.title2, design: .rounded, weight: .semibold))
+                    .font(.title2.weight(.semibold).design(.rounded))
                     .foregroundStyle(.white)
                 Text("HeartGold · SoulSilver")
                     .font(.system(.caption, design: .rounded))
@@ -180,7 +180,7 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(.title2, weight: .bold))
+                    .font(.title2.bold())
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
                     .background(.ultraThinMaterial)
@@ -194,7 +194,7 @@ struct ContentView: View {
                 }
             } label: {
                 Text("A")
-                    .font(.system(.title2, weight: .bold, design: .rounded))
+                    .font(.title2.bold())
                     .foregroundStyle(.white)
                     .frame(width: 72, height: 72)
                     .background(.ultraThinMaterial)
@@ -208,7 +208,7 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(.title2, weight: .bold))
+                    .font(.title2.bold())
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
                     .background(.ultraThinMaterial)

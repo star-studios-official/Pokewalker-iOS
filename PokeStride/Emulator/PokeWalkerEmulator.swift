@@ -179,7 +179,7 @@ class PokeWalkerEmulator: ObservableObject {
         h8_tick_subclock(state, Int32(ticks))
         h8_tick_sci3(state)
         var cycles: Int32 = 0
-        let target = Int32(ticks * (H8_SYSTEM_CLOCK / H8_SUB_CLOCK))
+        let target = Int32(ticks) * (H8_SYSTEM_CLOCK / H8_SUB_CLOCK)
         while cycles < target && !h8_is_sleeping(state) {
             let r = h8_step(state)
             if r == 0 { break }
@@ -193,7 +193,7 @@ class PokeWalkerEmulator: ObservableObject {
 
     private func renderFrame() {
         guard isRunning, let state = statePointer else { return }
-        var raw = [UInt32](repeating: 0, count: H8_LCD_WIDTH * H8_LCD_HEIGHT)
+        var raw = [UInt32](repeating: 0, count: Int(H8_LCD_WIDTH) * Int(H8_LCD_HEIGHT))
         raw.withUnsafeMutableBufferPointer { h8_render_lcd(state, $0.baseAddress) }
         let palette = paletteForMode(colorMode)
         var color = [UInt32](repeating: 0, count: raw.count)
@@ -201,12 +201,15 @@ class PokeWalkerEmulator: ObservableObject {
             let g = Int(raw[i] & 0xFF)
             let idx = g > 0xCC ? 0 : g > 0x88 ? 1 : g > 0x44 ? 2 : 3
             let c = palette[idx]
-            color[i] = UInt32(c.b) | (UInt32(c.g) << 8) | (UInt32(c.r) << 16) | 0xFF000000
+            let r = UInt32(c.r) << 16
+            let g = UInt32(c.g) << 8
+            let b = UInt32(c.b)
+            color[i] = r | g | b | 0xFF000000
         }
         let cs = CGColorSpaceCreateDeviceRGB()
         color.withUnsafeMutableBytes {
-            guard let ctx = CGContext(data: $0.baseAddress, width: H8_LCD_WIDTH, height: H8_LCD_HEIGHT,
-                                       bitsPerComponent: 8, bytesPerRow: H8_LCD_WIDTH * 4, space: cs,
+            guard let ctx = CGContext(data: $0.baseAddress, width: Int(H8_LCD_WIDTH), height: Int(H8_LCD_HEIGHT),
+                                       bitsPerComponent: 8, bytesPerRow: Int(H8_LCD_WIDTH) * 4, space: cs,
                                        bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue) else { return }
             if let img = ctx.makeImage() { self.lcdFrame = img }
         }
@@ -279,10 +282,10 @@ class PokeWalkerEmulator: ObservableObject {
         healthStore.requestAuthorization(toShare: nil, read: [stepType]) { [weak self] granted, error in
             guard granted, error == nil else {
                 print("HealthKit auth denied, falling back to CMPedometer")
-                self?.startCMPedometerFallback()
+                Task { @MainActor in self?.startCMPedometerFallback() }
                 return
             }
-            self?.setupHealthKitObserver()
+            Task { @MainActor in self?.setupHealthKitObserver() }
         }
     }
 
@@ -301,15 +304,17 @@ class PokeWalkerEmulator: ObservableObject {
         // Observer for real-time updates (works in background)
         observerQuery = HKObserverQuery(sampleType: stepType, predicate: predicate) { [weak self] _, completionHandler, error in
             guard error == nil else { completionHandler(); return }
+            // Capture lastStepCount at call time to avoid actor crossing
+            let lastCount = self?.lastStepCount ?? 0
             // Re-query the total and compute delta
             let innerQuery = HKStatisticsQuery(quantityType: stepType, quantitySamplePredicate: predicate, options: .cumulativeSum) { _, innerResult, _ in
                 guard let sum = innerResult?.sumQuantity() else { completionHandler(); return }
                 let total = Int(sum.doubleValue(for: .count()))
-                let delta = total - (self?.lastStepCount ?? 0)
+                let delta = total - lastCount
                 if delta > 0 {
-                    self?.lastStepCount = total
                     Task { @MainActor in
                         guard let self = self, let s = self.statePointer else { return }
+                        self.lastStepCount = total
                         h8_inject_steps(s, UInt32(delta))
                         self.steps = h8_get_steps(s)
                         self.lifetimeSteps = h8_get_lifetime_steps(s)
@@ -383,13 +388,13 @@ class PokeWalkerEmulator: ObservableObject {
 
     func saveEEPROM() {
         guard let state = statePointer else { return }
-        var buf = [UInt8](repeating: 0, count: H8_EEPROM_SIZE)
+        var buf = [UInt8](repeating: 0, count: Int(H8_EEPROM_SIZE))
         buf.withUnsafeMutableBufferPointer { h8_save_eeprom(state, $0.baseAddress) }
         try? Data(buf).write(to: documentsDirectory.appendingPathComponent("pweep.rom"))
     }
 
     func loadEEPROM(from url: URL) {
-        guard let data = try? Data(contentsOf: url), data.count >= H8_EEPROM_SIZE,
+        guard let data = try? Data(contentsOf: url), data.count >= Int(H8_EEPROM_SIZE),
               let state = statePointer else { return }
         eepromData = data
         data.withUnsafeBytes { h8_load_eeprom(state, $0.bindMemory(to: UInt8.self).baseAddress) }
@@ -468,11 +473,11 @@ class PokeWalkerEmulator: ObservableObject {
                 print("Download failed: bad status")
                 return false
             }
-            guard data.count >= H8_EEPROM_SIZE else {
+            guard data.count >= Int(H8_EEPROM_SIZE) else {
                 print("Download failed: too small (\(data.count) bytes)")
                 return false
             }
-            let eeprom = data.prefix(H8_EEPROM_SIZE)
+            let eeprom = data.prefix(Int(H8_EEPROM_SIZE))
             eepromData = eeprom
             // Save to Documents for Files app access and persistence
             try? eeprom.write(to: documentsDirectory.appendingPathComponent("pweep.rom"))

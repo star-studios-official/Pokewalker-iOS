@@ -60,7 +60,7 @@ struct SettingsView: View {
                             }
                             .padding(.vertical, 4)
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         // LCD Brightness
                         VStack(alignment: .leading, spacing: 8) {
@@ -74,7 +74,7 @@ struct SettingsView: View {
                                     emulator.setLCDBrightness(newValue)
                                 }
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
                     } header: {
                         Text("Display")
                             .font(.system(.headline, design: .rounded))
@@ -92,7 +92,7 @@ struct SettingsView: View {
                         .onChange(of: audioEnabled) { _, newValue in
                             emulator.setAudioEnabled(newValue)
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         // Volume indicator
                         if audioEnabled {
@@ -105,7 +105,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.white.opacity(0.5))
                             }
                             .padding(.vertical, 4)
-                            .listRowBackground(.ultraThinMaterial)
+                            
                         }
                     } header: {
                         Text("Audio")
@@ -128,7 +128,7 @@ struct SettingsView: View {
                                 emulator.stopStepCounting()
                             }
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         if backgroundSteps {
                             VStack(alignment: .leading, spacing: 6) {
@@ -150,7 +150,7 @@ struct SettingsView: View {
                                 }
                             }
                             .font(.system(.caption, design: .rounded))
-                            .listRowBackground(.ultraThinMaterial)
+                            
                         }
                     } header: {
                         Text("Health")
@@ -167,7 +167,7 @@ struct SettingsView: View {
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.white)
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         Button {
                             // Reset EEPROM to fresh state
@@ -177,7 +177,7 @@ struct SettingsView: View {
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.red)
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         // File import
                         Button {
@@ -187,7 +187,7 @@ struct SettingsView: View {
                                 .font(.system(.body, design: .rounded, weight: .medium))
                                 .foregroundStyle(.white)
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
                     } header: {
                         Text("Data")
                             .font(.system(.headline, design: .rounded))
@@ -204,7 +204,7 @@ struct SettingsView: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
 
                         HStack {
                             Text("Based on")
@@ -214,7 +214,7 @@ struct SettingsView: View {
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
-                        .listRowBackground(.ultraThinMaterial)
+                        
                     } header: {
                         Text("About")
                             .font(.system(.headline, design: .rounded))
