@@ -217,7 +217,7 @@ class PokeWalkerEmulator: ObservableObject {
             width: w, height: h,
             bitsPerComponent: 8, bitsPerPixel: 32,
             bytesPerRow: w * 4, space: cs,
-            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue,
+            bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue),
             provider: provider, decode: nil,
             shouldInterpolate: false, intent: .defaultIntent)
         if let img = img { self.lcdFrame = img }
