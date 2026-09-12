@@ -237,27 +237,35 @@ class PokeWalkerEmulator: ObservableObject {
 
     // MARK: - Audio (called from start() so statePointer is ready)
 
-    private func setupAudio() {
+    nonisolated private func setupAudio() {
         guard let statePtr = statePointer else { return }
+
+        // Snapshot the raw C function pointers outside any actor context.
+        // The render block runs on the audio IO thread and must not
+        // trigger Swift 6 actor-isolation checks.
+        let activeFunc  = h8_is_timer_w_active
+        let graFunc     = h8_get_timer_w_gra
+        let volFunc     = h8_get_volume
+        let subClock    = Double(H8_SUB_CLOCK)
 
         let engine = AVAudioEngine()
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 22050, channels: 1, interleaved: true) else { return }
 
-        // Capture the pointer value directly — no actor crossing.
-        // statePtr is an UnsafeMutablePointer (stable for emulation lifetime).
+        // The render block is @Sendable and runs on the audio IO thread.
+        // We capture only raw pointers / C function values — no actor state.
         let sourceNode = AVAudioSourceNode(renderBlock: { _, _, frameCount, audioBufferList -> OSStatus in
             let abl = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let buf = abl[0]
             let ptr = buf.mData!.assumingMemoryBound(to: Int16.self)
             let count = Int(frameCount)
 
-            let active = h8_is_timer_w_active(statePtr)
-            let gra = h8_get_timer_w_gra(statePtr)
-            let vol = h8_get_volume(statePtr)
+            let active = activeFunc(statePtr)
+            let gra    = graFunc(statePtr)
+            let vol    = volFunc(statePtr)
 
             if active && gra > 0 && vol > 0 {
-                let freq = Double(H8_SUB_CLOCK) / (2.0 * Double(gra))
-                let amp = Int16(16000 * Double(vol) / 2.0)
+                let freq = subClock / (2.0 * Double(gra))
+                let amp  = Int16(16000 * Double(vol) / 2.0)
                 for i in 0..<count {
                     let t = Double(i) / 22050.0
                     ptr[i] = (sin(2.0 * .pi * freq * t) > 0) ? amp : -amp
