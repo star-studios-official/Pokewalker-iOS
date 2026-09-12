@@ -1,9 +1,8 @@
 import SwiftUI
-import HealthKit
 
 struct SettingsView: View {
     @EnvironmentObject var emulator: PokeWalkerEmulator
-    @StateObject private var sprites = ColoredSprites.shared
+    private let sprites = ColoredSprites.shared
     @Environment(\.dismiss) private var dismiss
 
     @AppStorage("colorMode") private var colorMode = 0

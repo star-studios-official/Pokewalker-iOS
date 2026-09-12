@@ -99,7 +99,10 @@ class ColoredSprites: ObservableObject {
         if let url = Bundle.main.url(forResource: name, withExtension: ext, subdirectory: "Data") {
             return try? Data(contentsOf: url)
         }
-        return try? Data(contentsOf: URL(fileURLWithPath: Bundle.main.path(forResource: name, ofType: ext)!))
+        if let path = Bundle.main.path(forResource: name, ofType: ext) {
+            return try? Data(contentsOf: URL(fileURLWithPath: path))
+        }
+        return nil
     }
 
     // MARK: - Palette Preview (for SettingsView)

@@ -1,7 +1,6 @@
 import SwiftUI
 import AVFoundation
 import CoreMotion
-import HealthKit
 
 /// Main emulator class — bridges the C H8/300H emulator to SwiftUI
 /// Color mode system matches picowalker-core: pw_color_mode (0-3)
@@ -21,21 +20,23 @@ class PokeWalkerEmulator: ObservableObject {
     @Published var colorMode: UInt8 = 0
 
     // MARK: - C Emulator State
-    private var state = H8State()
+    // nonisolated(unsafe) allows the audio render block to read state without
+    // crossing actor boundaries — the reads are simple memory reads on a
+    // struct that only the main actor writes to.
+    nonisolated(unsafe) private var state = H8State()
     private var renderTimer: Timer?
     private var subClockTimer: Timer?
 
     // MARK: - Audio
     private var audioEngine: AVAudioEngine?
     private var audioSourceNode: AVAudioSourceNode?
+    nonisolated(unsafe) private var audioEnabled: Bool = true
 
     // MARK: - Step Counter
     private let pedometer = CMPedometer()
     private var lastStepCount: Int = 0
     private var stepTimer: Timer?
-
-    // MARK: - HealthKit
-    private let healthStore = HKHealthStore()
+    private var stepCountingActive = false
 
     // MARK: - ROM & EEPROM
     private var romData: Data?
@@ -46,113 +47,81 @@ class PokeWalkerEmulator: ObservableObject {
 
     // MARK: - Picowalker Color Palettes
     // From picowalker/src/drivers/screen/sh8601z_rp2xxx_qspi_pio.h
-    // RGB565 -> RGB888 conversion for the 4 grayscale levels
     static let colourMapNormal: [(r: UInt8, g: UInt8, b: UInt8)] = [
-        (0xF7, 0xDE, 0xAD),  // white  (0x7ead -> 0b0111_1110_1010_1101)
-        (0x6F, 0xC0, 0x6B),  // light grey (0xd786)
-        (0x38, 0xC0, 0x73),  // dark grey (0xe307)
-        (0x31, 0x82, 0x45),  // black  (0xa419)
+        (0xF7, 0xDE, 0xAD),  // white
+        (0x6F, 0xC0, 0x6B),  // light grey
+        (0x38, 0xC0, 0x73),  // dark grey
+        (0x31, 0x82, 0x45),  // black
     ]
 
     static let colourMapHSTX: [(r: UInt8, g: UInt8, b: UInt8)] = [
-        (0xF7, 0xDE, 0xAD),  // white  (0xe75b)
-        (0x6C, 0xD8, 0x70),  // light grey (0xbe16)
-        (0x18, 0xB8, 0x38),  // dark grey (0x7c0e)
-        (0x25, 0x11, 0x24),  // black  (0x5289)
+        (0xF7, 0xDE, 0xAD),  // white
+        (0x6C, 0xD8, 0x70),  // light grey
+        (0x18, 0xB8, 0x38),  // dark grey
+        (0x25, 0x11, 0x24),  // black
     ]
 
-    // N_COLOR_MODES = 4 from picowalker-core/src/apps/app_picowalker.c
-    // Mode 0: Normal grayscale (original PokéWalker LCD feel)
-    // Mode 1: High contrast grayscale
-    // Mode 2: Sepia/warm tone
-    // Mode 3: Full color (picowalker "color_fancy" mode)
-
-    /// RGB565 to RGB888 helper
-    private func rgb555toRGB(_ val: UInt16) -> (r: UInt8, g: UInt8, b: UInt8) {
-        let r5 = Int(val & 0x1F)
-        let g5 = Int((val >> 5) & 0x1F)
-        let b5 = Int((val >> 10) & 0x1F)
-        return (UInt8((r5 << 3) | (r5 >> 2)),
-                UInt8((g5 << 3) | (g5 >> 2)),
-                UInt8((b5 << 3) | (b5 >> 2)))
-    }
-
-    /// Get the 4-color palette for the current color mode
     private func paletteForMode(_ mode: UInt8) -> [(r: UInt8, g: UInt8, b: UInt8)] {
         switch mode {
-        case 0: // Normal grayscale (picowalker default)
-            return Self.colourMapNormal
-        case 1: // High contrast
+        case 0: return Self.colourMapNormal
+        case 1:
             return [
-                (0xFF, 0xFF, 0xFF),  // white
-                (0xBB, 0xBB, 0xBB),  // light grey
-                (0x55, 0x55, 0x55),  // dark grey
-                (0x00, 0x00, 0x00),  // black
+                (0xFF, 0xFF, 0xFF),
+                (0xBB, 0xBB, 0xBB),
+                (0x55, 0x55, 0x55),
+                (0x00, 0x00, 0x00),
             ]
-        case 2: // Sepia/warm
+        case 2:
             return [
-                (0xF5, 0xE6, 0xC8),  // warm white
-                (0xC4, 0xA8, 0x7A),  // light sepia
-                (0x7A, 0x5E, 0x3C),  // dark sepia
-                (0x2C, 0x1A, 0x0A),  // dark brown
+                (0xF5, 0xE6, 0xC8),
+                (0xC4, 0xA8, 0x7A),
+                (0x7A, 0x5E, 0x3C),
+                (0x2C, 0x1A, 0x0A),
             ]
-        case 3: // Full color (picowalker "color_fancy" mode)
-            // This mode uses the colored sprite atlas
-            // For LCD rendering, use enhanced palette
-            return Self.colourMapHSTX
-        default:
-            return Self.colourMapNormal
+        case 3: return Self.colourMapHSTX
+        default: return Self.colourMapNormal
         }
     }
 
-    /// EEPROM HealthData offset for color_mode (from picowalker-core/types.h)
-    static let eepromHealthDataColorModeOffset = 0x016E  // 0x0156 (health_data_1) + 0x16 (color_mode field)
+    static let eepromHealthDataColorModeOffset = 0x016E
 
     init() {
         loadBundledAssets()
         setupAudio()
-        setupStepCounter()
     }
 
     deinit {
-        stop()
         audioEngine?.stop()
     }
 
     // MARK: - Asset Loading
 
     private func loadBundledAssets() {
-        // Load ROM from app bundle (Data/pwflash.rom)
         if let romURL = Bundle.main.url(forResource: "pwflash", withExtension: "rom", subdirectory: "Data") {
             romData = try? Data(contentsOf: romURL)
         } else if let romURL = Bundle.main.url(forResource: "pwflash", withExtension: "rom") {
             romData = try? Data(contentsOf: romURL)
         }
 
-        // Load EEPROM from Documents (user can copy via Files app)
         let eepromPath = documentsDirectory.appendingPathComponent("pweep.rom")
         if FileManager.default.fileExists(atPath: eepromPath.path) {
             eepromData = try? Data(contentsOf: eepromPath)
         } else {
-            // Try bundle default
             if let bundleEEPROM = Bundle.main.url(forResource: "pweep", withExtension: "rom", subdirectory: "Data") {
                 eepromData = try? Data(contentsOf: bundleEEPROM)
             } else if let bundleEEPROM = Bundle.main.url(forResource: "pweep", withExtension: "rom") {
                 eepromData = try? Data(contentsOf: bundleEEPROM)
             } else {
-                // Create fresh EEPROM with "nintendo" magic
                 eepromData = Data(count: 65536)
                 eepromData?.replaceSubrange(0..<8, with: "nintendo".data(using: .ascii)!)
             }
         }
 
-        // Read color mode from EEPROM health data
         if let eeprom = eepromData, eeprom.count >= 0x170 {
             colorMode = eeprom[Self.eepromHealthDataColorModeOffset]
             sprites.colorMode = Int(colorMode)
         }
 
-        // Load pokeicon sprite data if available
         sprites.loadFromBundle()
     }
 
@@ -170,7 +139,6 @@ class PokeWalkerEmulator: ObservableObject {
             return
         }
 
-        // Initialize the C emulator
         rom.withUnsafeBytes { romPtr in
             eepromData?.withUnsafeBytes { eepromPtr in
                 h8_init(&state, romPtr.bindMemory(to: UInt8.self).baseAddress,
@@ -178,30 +146,27 @@ class PokeWalkerEmulator: ObservableObject {
             }
         }
 
-        // Set up callbacks
-        let unmanagedSelf = Unmanaged.passUnretained(self).toOpaque()
-        h8_set_callbacks(&state,
-                         lcdCallback,
-                         audioCallback,
-                         stepCallback,
-                         unmanagedSelf)
-
         isRunning = true
 
-        // Start sub-clock timer (32768 Hz, batch ~1024 ticks)
         subClockTimer = Timer.scheduledTimer(withTimeInterval: 1.0/32.0, repeats: true) { [weak self] _ in
-            self?.runSubClockBatch()
+            Task { @MainActor [weak self] in
+                self?.runSubClockBatch()
+            }
         }
 
-        // Start LCD render timer (60 FPS)
         renderTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-            self?.renderFrame()
+            Task { @MainActor [weak self] in
+                self?.renderFrame()
+            }
         }
 
-        // Start step injection timer
         stepTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.injectHealthKitSteps()
+            Task { @MainActor [weak self] in
+                self?.updateStepDisplay()
+            }
         }
+
+        startStepCounting()
     }
 
     func stop() {
@@ -212,6 +177,7 @@ class PokeWalkerEmulator: ObservableObject {
         renderTimer = nil
         subClockTimer = nil
         stepTimer = nil
+        stopStepCounting()
         saveEEPROM()
     }
 
@@ -233,36 +199,26 @@ class PokeWalkerEmulator: ObservableObject {
             cyclesRun += Int32(result)
         }
 
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.steps = h8_get_steps(&self.state)
-            self.lifetimeSteps = h8_get_lifetime_steps(&self.state)
-            self.watts = h8_get_watts(&self.state)
-            self.isSleeping = h8_is_sleeping(&self.state)
-        }
+        self.steps = h8_get_steps(&self.state)
+        self.lifetimeSteps = h8_get_lifetime_steps(&self.state)
+        self.watts = h8_get_watts(&self.state)
+        self.isSleeping = h8_is_sleeping(&self.state)
     }
 
     private func renderFrame() {
         guard isRunning else { return }
 
-        // Render raw LCD pixels (2bpp grayscale, values 0-3)
         var rawPixels = [UInt32](repeating: 0, count: H8_LCD_WIDTH * H8_LCD_HEIGHT)
         rawPixels.withUnsafeMutableBufferPointer { ptr in
             h8_render_lcd(&state, ptr.baseAddress)
         }
 
-        // Apply color palette based on pw_color_mode
         let palette = paletteForMode(colorMode)
 
-        // Convert raw 2bpp grayscale to colored pixels
         var colorPixels = [UInt32](repeating: 0, count: H8_LCD_WIDTH * H8_LCD_HEIGHT)
         for i in 0..<rawPixels.count {
-            // Extract the 2-bit pixel value (0-3) from the raw BGRA pixel
-            // h8_render_lcd produces BGRA8 with grayscale in all channels
             let raw = rawPixels[i]
-            // The LCD renderer puts gray value in the blue channel
             let gray = Int(raw & 0xFF)
-            // Map to palette index: 0xFF->0, 0xAA->1, 0x55->2, 0x00->3
             let idx: Int
             if gray > 0xCC { idx = 0 }
             else if gray > 0x88 { idx = 1 }
@@ -270,27 +226,29 @@ class PokeWalkerEmulator: ObservableObject {
             else { idx = 3 }
 
             let c = palette[idx]
-            // BGRA format: Blue, Green, Red, Alpha
             colorPixels[i] = UInt32(c.b) | (UInt32(c.g) << 8) | (UInt32(c.r) << 16) | 0xFF000000
         }
 
-        // Convert BGRA pixels to CGImage
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let context = CGContext(
-            data: &colorPixels,
-            width: H8_LCD_WIDTH,
-            height: H8_LCD_HEIGHT,
-            bitsPerComponent: 8,
-            bytesPerRow: H8_LCD_WIDTH * 4,
-            space: colorSpace,
-            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
-        ) else { return }
+        colorPixels.withUnsafeMutableBytes { bufferPtr in
+            guard let context = CGContext(
+                data: bufferPtr.baseAddress,
+                width: H8_LCD_WIDTH,
+                height: H8_LCD_HEIGHT,
+                bitsPerComponent: 8,
+                bytesPerRow: H8_LCD_WIDTH * 4,
+                space: colorSpace,
+                bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+            ) else { return }
 
-        if let cgImage = context.makeImage() {
-            DispatchQueue.main.async {
+            if let cgImage = context.makeImage() {
                 self.lcdFrame = cgImage
             }
         }
+    }
+
+    private func updateStepDisplay() {
+        // Steps are updated by the pedometer callback
     }
 
     // MARK: - Button Input
@@ -312,6 +270,8 @@ class PokeWalkerEmulator: ObservableObject {
                                     channels: 1,
                                     interleaved: true)!
 
+        // The render block runs on the audio IO thread, NOT the main actor.
+        // We use nonisolated(unsafe) state/flags to avoid concurrency violations.
         let sourceNode = AVAudioSourceNode(renderBlock: { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
             guard let self = self else { return noErr }
 
@@ -320,22 +280,21 @@ class PokeWalkerEmulator: ObservableObject {
             let ptr = buffer.mData!.assumingMemoryBound(to: Int16.self)
             let count = Int(frameCount)
 
-            if h8_is_timer_w_active(&self.state) {
-                let gra = h8_get_timer_w_gra(&self.state)
-                let volume = h8_get_volume(&self.state)
+            // These are nonisolated(unsafe) — safe to read from any thread
+            let timerActive = h8_is_timer_w_active(&self.state)
+            let gra = h8_get_timer_w_gra(&self.state)
+            let volume = h8_get_volume(&self.state)
+            let enabled = self.audioEnabled
 
-                if gra > 0 && volume > 0 {
-                    let frequency = Double(H8_SUB_CLOCK) / (2.0 * Double(gra))
-                    let sampleRate = 22050.0
-                    let amplitude = Int16(16000 * Double(volume) / 2.0)
+            if timerActive && gra > 0 && volume > 0 && enabled {
+                let frequency = Double(H8_SUB_CLOCK) / (2.0 * Double(gra))
+                let sampleRate = 22050.0
+                let amplitude = Int16(16000 * Double(volume) / 2.0)
 
-                    for i in 0..<count {
-                        let t = Double(i) / sampleRate
-                        let sample = (sin(2.0 * .pi * frequency * t) > 0) ? amplitude : -amplitude
-                        ptr[i] = sample
-                    }
-                } else {
-                    memset(ptr, 0, count * MemoryLayout<Int16>.size)
+                for i in 0..<count {
+                    let t = Double(i) / sampleRate
+                    let sample = (sin(2.0 * .pi * frequency * t) > 0) ? amplitude : -amplitude
+                    ptr[i] = sample
                 }
             } else {
                 memset(ptr, 0, count * MemoryLayout<Int16>.size)
@@ -358,12 +317,14 @@ class PokeWalkerEmulator: ObservableObject {
 
     // MARK: - Step Counter
 
-    func setupStepCounter() {
+    func startStepCounting() {
+        guard !stepCountingActive else { return }
         guard CMPedometer.isStepCountingAvailable() else {
             print("Step counting not available on this device")
             return
         }
 
+        stepCountingActive = true
         let calendar = Calendar.current
         let now = Date()
         let startOfDay = calendar.startOfDay(for: now)
@@ -371,26 +332,22 @@ class PokeWalkerEmulator: ObservableObject {
         pedometer.startUpdates(from: startOfDay) { [weak self] data, error in
             guard let data = data, error == nil else { return }
             let newSteps = data.numberOfSteps.intValue
-            let delta = newSteps - (self?.lastStepCount ?? 0)
+            guard let self = self else { return }
+            let delta = newSteps - self.lastStepCount
             if delta > 0 {
-                self?.lastStepCount = newSteps
+                self.lastStepCount = newSteps
                 Task { @MainActor in
-                    h8_inject_steps(&self!.state, UInt32(delta))
+                    h8_inject_steps(&self.state, UInt32(delta))
+                    self.steps = h8_get_steps(&self.state)
+                    self.lifetimeSteps = h8_get_lifetime_steps(&self.state)
                 }
             }
         }
     }
 
-    func startStepCounting() {
-        setupStepCounter()
-    }
-
     func stopStepCounting() {
+        stepCountingActive = false
         pedometer.stopUpdates()
-    }
-
-    private func injectHealthKitSteps() {
-        // CMPedometer handles real-time updates via the callback above
     }
 
     // MARK: - Color Mode (picowalker pw_color_mode)
@@ -399,7 +356,6 @@ class PokeWalkerEmulator: ObservableObject {
         colorMode = UInt8(mode)
         sprites.colorMode = mode
 
-        // Write to EEPROM health_data.color_mode (offset 0x16 in health_data)
         let eepromAddr = Self.eepromHealthDataColorModeOffset
         if var eeprom = eepromData, eeprom.count > eepromAddr {
             eeprom[eepromAddr] = UInt8(mode)
@@ -414,13 +370,13 @@ class PokeWalkerEmulator: ObservableObject {
     // MARK: - LCD Brightness
 
     func setLCDBrightness(_ brightness: Double) {
-        // Store for future use - the actual LCD doesn't have brightness control
         UserDefaults.standard.set(brightness, forKey: "lcdBrightness")
     }
 
     // MARK: - Audio Toggle
 
     func setAudioEnabled(_ enabled: Bool) {
+        audioEnabled = enabled
         if enabled {
             audioEngine?.mainMixerNode.outputVolume = 1.0
         } else {
@@ -448,14 +404,12 @@ class PokeWalkerEmulator: ObservableObject {
         data.withUnsafeBytes { ptr in
             h8_load_eeprom(&state, ptr.bindMemory(to: UInt8.self).baseAddress)
         }
-        // Re-read color mode
         if data.count > Self.eepromHealthDataColorModeOffset {
             colorMode = data[Self.eepromHealthDataColorModeOffset]
         }
     }
 
     func resetEEPROM() {
-        // Create fresh EEPROM with "nintendo" magic
         eepromData = Data(count: 65536)
         eepromData?.replaceSubrange(0..<8, with: "nintendo".data(using: .ascii)!)
         if isRunning {
@@ -523,18 +477,4 @@ class PokeWalkerEmulator: ObservableObject {
     func receiveSaveFromPKWBridge(address: String, pin: String) async -> Bool {
         return false
     }
-}
-
-// MARK: - C Callbacks
-
-private func lcdCallback(_ videoBuffer: UnsafePointer<UInt32>?, _ userdata: UnsafeMutableRawPointer?) {
-    // Handled in Swift timer
-}
-
-private func audioCallback(_ graValue: UInt16, _ volume: UInt8, _ timerActive: Bool, _ userdata: UnsafeMutableRawPointer?) {
-    // Handled by AVAudioSourceNode render block
-}
-
-private func stepCallback(_ userdata: UnsafeMutableRawPointer?) -> UInt32 {
-    return 0
 }
