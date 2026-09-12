@@ -194,7 +194,9 @@ class PokeWalkerEmulator: ObservableObject {
 
     private func renderFrame() {
         guard isRunning, let state = statePointer else { return }
-        var raw = [UInt32](repeating: 0, count: Int(H8_LCD_WIDTH) * Int(H8_LCD_HEIGHT))
+        let w = Int(H8_LCD_WIDTH)
+        let h = Int(H8_LCD_HEIGHT)
+        var raw = [UInt32](repeating: 0, count: w * h)
         raw.withUnsafeMutableBufferPointer { h8_render_lcd(state, $0.baseAddress) }
         let palette = paletteForMode(colorMode)
         var color = [UInt32](repeating: 0, count: raw.count)
@@ -207,13 +209,18 @@ class PokeWalkerEmulator: ObservableObject {
             let blu = UInt32(c.b)
             color[i] = red | grn | blu | 0xFF000000
         }
+        // Use Data copy + CGDataProvider so the CGImage owns its backing store
+        let pixelData = Data(bytes: color, count: color.count * MemoryLayout<UInt32>.size)
+        guard let provider = CGDataProvider(data: pixelData as CFData) else { return }
         let cs = CGColorSpaceCreateDeviceRGB()
-        color.withUnsafeMutableBytes {
-            guard let ctx = CGContext(data: $0.baseAddress, width: Int(H8_LCD_WIDTH), height: Int(H8_LCD_HEIGHT),
-                                       bitsPerComponent: 8, bytesPerRow: Int(H8_LCD_WIDTH) * 4, space: cs,
-                                       bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue) else { return }
-            if let img = ctx.makeImage() { self.lcdFrame = img }
-        }
+        let img = CGImage(
+            width: w, height: h,
+            bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: w * 4, space: cs,
+            bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue,
+            provider: provider, decode: nil,
+            shouldInterpolate: false, intent: .defaultIntent)
+        if let img = img { self.lcdFrame = img }
     }
 
     private func updateStepDisplay() {}
