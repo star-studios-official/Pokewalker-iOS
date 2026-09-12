@@ -47,7 +47,6 @@ jobs:
             -scheme "${{ env.SCHEME_NAME }}" \
             -destination 'generic/platform=iOS' \
             -sdk iphoneos \
-            -arch arm64 \
             -configuration Release \
             CODE_SIGNING_ALLOWED=NO
 
