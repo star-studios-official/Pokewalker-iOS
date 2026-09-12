@@ -1,0 +1,482 @@
+/*
+ * pkwbridge_wifi_server.c — WiFi HTTP server addition for pkwbridge
+ *
+ * This adds an HTTP server to pkwbridge that allows the iOS PokeStride app
+ * to transfer EEPROM (pweep.rom) data over WiFi.
+ *
+ * Protocol (matches PKSM's WirelessTransfer):
+ *   GET  /transfer/info    → JSON { device, version, maxUploadBytes }
+ *   POST /transfer/upload  → multipart/form-data with EEPROM data
+ *   GET  /transfer/download → raw EEPROM file (65536 bytes)
+ *
+ * Build: Add this file to pkwbridge's Makefile source list
+ *        Link with -lcsocs (3DS networking library)
+ *
+ * Usage: Call pkwbridge_wifi_init() after pkwbridge's main initialization
+ *        Call pkwbridge_wifi_cleanup() on exit
+ */
+
+#include <3ds.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <errno.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+
+/* ── Configuration ──────────────────────────────────────────────────────── */
+
+#define WIFI_SERVER_PORT        8000
+#define MAX_REQUEST_SIZE        (128 * 1024)
+#define MAX_UPLOAD_SIZE         (128 * 1024)
+#define RECEIVE_CHUNK_SIZE      (32 * 1024)
+#define RECEIVE_TIMEOUT_MS      15000
+#define POLL_SLICE_MS           1000
+
+/* ── State ──────────────────────────────────────────────────────────────── */
+
+static volatile bool g_wifi_server_running = false;
+static volatile bool g_wifi_server_ready = false;
+static s32 g_server_socket = -1;
+static char g_server_address[64] = {0};
+static Thread g_server_thread;
+
+/* ── External: EEPROM path (set by pkwbridge) ─────────────────────────── */
+extern char pweep_path[256];  /* Path to pweep.rom on SD card */
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
+
+static bool send_all(s32 sock, const void *data, size_t len) {
+    const char *ptr = (const char *)data;
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(sock, ptr + sent, len - sent, 0);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+static ssize_t recv_with_timeout(s32 sock, char *buf, size_t len, int *idle_ms) {
+    while (g_wifi_server_running) {
+        pollfd pfd = { .fd = sock, .events = POLLIN, .revents = 0 };
+        int ready = poll(&pfd, 1, POLL_SLICE_MS);
+        if (ready < 0) return -1;
+        if (ready == 0) {
+            *idle_ms += POLL_SLICE_MS;
+            if (*idle_ms >= RECEIVE_TIMEOUT_MS) return 0;
+            continue;
+        }
+        *idle_ms = 0;
+        return recv(sock, buf, len, 0);
+    }
+    return -1;
+}
+
+static void send_response(s32 sock, int code, const char *content_type,
+                           const char *body, size_t body_len) {
+    char header[512];
+    const char *status = (code == 200) ? "OK" : (code == 404 ? "Not Found" : "Error");
+    int hlen = snprintf(header, sizeof(header),
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n",
+        code, status, content_type, body_len);
+    send_all(sock, header, (size_t)hlen);
+    if (body_len > 0 && body) send_all(sock, body, body_len);
+}
+
+static void send_json_response(s32 sock, int code, const char *json) {
+    send_response(sock, code, "application/json", json, strlen(json));
+}
+
+/* ── Handler: GET /transfer/info ────────────────────────────────────────── */
+
+static void handle_info(s32 sock) {
+    char json[256];
+    snprintf(json, sizeof(json),
+        "{\"device\":\"PKWBridge (3DS)\","
+         "\"version\":\"1.0.0\","
+         "\"maxUploadBytes\":%d}",
+        MAX_UPLOAD_SIZE);
+    send_json_response(sock, 200, json);
+}
+
+/* ── Handler: POST /transfer/upload ─────────────────────────────────────── */
+
+static bool extract_multipart_boundary(const char *headers, char *boundary, size_t bmax) {
+    const char *ct = strstr(headers, "Content-Type:");
+    if (!ct) return false;
+    const char *eq = strstr(ct, "boundary=");
+    if (!eq) return false;
+    eq += 9;
+    size_t i = 0;
+    while (eq[i] && eq[i] != '\r' && eq[i] != ';' && i < bmax - 1) {
+        boundary[i] = eq[i];
+        i++;
+    }
+    boundary[i] = '\0';
+    /* Strip quotes */
+    if (boundary[0] == '"' && i > 2) {
+        memmove(boundary, boundary + 1, i - 2);
+        boundary[i - 2] = '\0';
+    }
+    return i > 0;
+}
+
+static void handle_upload(s32 sock, const char *headers, size_t content_length) {
+    /* Parse boundary */
+    char boundary[128];
+    if (!extract_multipart_boundary(headers, boundary, sizeof(boundary))) {
+        send_json_response(sock, 400, "{\"ok\":false,\"error\":\"Missing boundary\"}");
+        return;
+    }
+
+    /* Read body from socket into temp file */
+    char tmp_path[256];
+    snprintf(tmp_path, sizeof(tmp_path), "sdmc:/3ds/pkwbridge/upload_tmp.bin");
+
+    FILE *tmpf = fopen(tmp_path, "wb");
+    if (!tmpf) {
+        send_json_response(sock, 500, "{\"ok\":false,\"error\":\"Cannot create temp file\"}");
+        return;
+    }
+
+    size_t received = 0;
+    char buf[RECEIVE_CHUNK_SIZE];
+    int idle_ms = 0;
+
+    /* Skip past headers in the already-read data if any */
+    const char *body_start = strstr(headers, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4;
+        size_t already = (size_t)(body_start - headers);
+        if (already < content_length) {
+            size_t to_write = content_length - already;
+            fwrite(body_start, 1, to_write, tmpf);
+            received += to_write;
+        }
+    }
+
+    while (received < content_length) {
+        ssize_t n = recv_with_timeout(sock, buf, sizeof(buf), &idle_ms);
+        if (n <= 0) break;
+        size_t to_write = (size_t)n;
+        if (received + to_write > content_length) {
+            to_write = content_length - received;
+        }
+        fwrite(buf, 1, to_write, tmpf);
+        received += to_write;
+    }
+
+    fclose(tmpf);
+
+    if (received != content_length) {
+        remove(tmp_path);
+        send_json_response(sock, 400, "{\"ok\":false,\"error\":\"Incomplete upload\"}");
+        return;
+    }
+
+    /* Parse the multipart to find the actual EEPROM data */
+    /* For simplicity, skip metadata part and extract the file */
+    FILE *readf = fopen(tmp_path, "rb");
+    if (!readf) {
+        send_json_response(sock, 500, "{\"ok\":false,\"error\":\"Cannot read temp file\"}");
+        return;
+    }
+
+    /* Read entire file into memory */
+    fseek(readf, 0, SEEK_END);
+    long fsize = ftell(readf);
+    fseek(readf, 0, SEEK_SET);
+
+    char *fdata = (char *)malloc(fsize);
+    if (!fdata) {
+        fclose(readf);
+        send_json_response(sock, 500, "{\"ok\":false,\"error\":\"Out of memory\"}");
+        return;
+    }
+    fread(fdata, 1, fsize, readf);
+    fclose(readf);
+
+    /* Find the file boundary */
+    char file_boundary[140];
+    snprintf(file_boundary, sizeof(file_boundary), "--%s", boundary);
+
+    /* Find second occurrence (the file part) */
+    char *part1 = strstr(fdata, file_boundary);
+    if (part1) {
+        char *part2 = strstr(part1 + strlen(file_boundary), file_boundary);
+        if (part2) {
+            /* Find the data after headers in part2 */
+            char *data_start = strstr(part2, "\r\n\r\n");
+            if (data_start) {
+                data_start += 4;
+                char *data_end = strstr(data_start, file_boundary);
+                if (!data_end) data_end = fdata + fsize;
+
+                size_t eeprom_size = (size_t)(data_end - data_start);
+                /* Strip trailing \r\n */
+                while (eeprom_size > 0 && (data_end[-1] == '\r' || data_end[-1] == '\n')) {
+                    eeprom_size--;
+                    data_end--;
+                }
+
+                if (eeprom_size >= 65536) {
+                    /* Write EEPROM to the pweep.rom path */
+                    FILE *eepf = fopen(pweep_path, "wb");
+                    if (eepf) {
+                        fwrite(data_start, 1, 65536, eepf);
+                        fclose(eepf);
+                        printf("[WiFi] EEPROM uploaded successfully (%zu bytes)\n", eeprom_size);
+                    } else {
+                        free(fdata);
+                        remove(tmp_path);
+                        send_json_response(sock, 500,
+                            "{\"ok\":false,\"error\":\"Cannot write pweep.rom\"}");
+                        return;
+                    }
+                } else {
+                    free(fdata);
+                    remove(tmp_path);
+                    send_json_response(sock, 400,
+                        "{\"ok\":false,\"error\":\"Data too small for EEPROM\"}");
+                    return;
+                }
+            }
+        }
+    }
+
+    free(fdata);
+    remove(tmp_path);
+
+    send_json_response(sock, 200, "{\"ok\":true,\"savedPath\":\"pweep.rom\"}");
+}
+
+/* ── Handler: GET /transfer/download ────────────────────────────────────── */
+
+static void handle_download(s32 sock) {
+    FILE *f = fopen(pweep_path, "rb");
+    if (!f) {
+        send_json_response(sock, 404, "{\"ok\":false,\"error\":\"pweep.rom not found\"}");
+        return;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (fsize < 65536) {
+        fclose(f);
+        send_json_response(sock, 400, "{\"ok\":false,\"error\":\"EEPROM too small\"}");
+        return;
+    }
+
+    /* Send HTTP header */
+    char header[256];
+    int hlen = snprintf(header, sizeof(header),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/octet-stream\r\n"
+        "Content-Length: 65536\r\n"
+        "Connection: close\r\n"
+        "\r\n");
+    send_all(sock, header, (size_t)hlen);
+
+    /* Stream the EEPROM data */
+    char buf[RECEIVE_CHUNK_SIZE];
+    size_t remaining = 65536;
+    while (remaining > 0) {
+        size_t to_read = (remaining > sizeof(buf)) ? sizeof(buf) : remaining;
+        size_t nread = fread(buf, 1, to_read, f);
+        if (nread == 0) break;
+        if (!send_all(sock, buf, nread)) break;
+        remaining -= nread;
+    }
+
+    fclose(f);
+    printf("[WiFi] EEPROM downloaded by client\n");
+}
+
+/* ── HTTP Request Parser ────────────────────────────────────────────────── */
+
+static void handle_client(s32 client_sock, struct sockaddr_in *client_addr) {
+    char *headers_buf = (char *)malloc(MAX_REQUEST_SIZE);
+    if (!headers_buf) {
+        close(client_sock);
+        return;
+    }
+
+    /* Read headers */
+    size_t total = 0;
+    size_t header_end = (size_t)-1;
+    int idle_ms = 0;
+
+    while (total < MAX_REQUEST_SIZE) {
+        ssize_t n = recv_with_timeout(client_sock, headers_buf + total,
+                                       MAX_REQUEST_SIZE - total, &idle_ms);
+        if (n <= 0) { free(headers_buf); close(client_sock); return; }
+        total += (size_t)n;
+
+        /* Find end of headers */
+        for (size_t i = (total > 4 ? total - (size_t)n : 0); i + 3 < total; i++) {
+            if (headers_buf[i] == '\r' && headers_buf[i+1] == '\n' &&
+                headers_buf[i+2] == '\r' && headers_buf[i+3] == '\n') {
+                header_end = i;
+                break;
+            }
+        }
+        if (header_end != (size_t)-1) break;
+    }
+
+    if (header_end == (size_t)-1) {
+        free(headers_buf); close(client_sock); return;
+    }
+
+    headers_buf[header_end] = '\0';  /* Null-terminate for parsing */
+
+    /* Extract path */
+    char method[16] = {0}, path[256] = {0};
+    sscanf(headers_buf, "%15s %255s", method, path);
+
+    /* Content-Length */
+    size_t content_length = 0;
+    const char *cl = strstr(headers_buf, "Content-Length:");
+    if (cl) content_length = (size_t)strtoul(cl + 15, NULL, 10);
+
+    char peer[INET_ADDRSTRLEN] = {0};
+    inet_ntop(AF_INET, &client_addr->sin_addr, peer, sizeof(peer));
+    printf("[WiFi] %s %s from %s (%zu bytes)\n", method, path, peer, content_length);
+
+    /* Route */
+    if (strcmp(path, "/transfer/info") == 0) {
+        handle_info(client_sock);
+    } else if (strcmp(path, "/transfer/upload") == 0 && strcmp(method, "POST") == 0) {
+        /* Pass headers for boundary parsing */
+        handle_upload(client_sock, headers_buf, content_length);
+    } else if (strcmp(path, "/transfer/download") == 0 && strcmp(method, "GET") == 0) {
+        handle_download(client_sock);
+    } else {
+        send_json_response(client_sock, 404, "{\"ok\":false,\"error\":\"Not found\"}");
+    }
+
+    free(headers_buf);
+    close(client_sock);
+}
+
+/* ── Server Thread ──────────────────────────────────────────────────────── */
+
+static void server_thread_func(void *arg) {
+    (void)arg;
+
+    /* Initialize SOC (3DS networking) */
+    u32 *soc_buf = (u32 *)memalign(0x1000, 0x20000);
+    if (!soc_buf) {
+        printf("[WiFi] Failed to allocate SOC buffer\n");
+        return;
+    }
+    Result ret = socInit(soc_buf, 0x20000);
+    if (R_FAILED(ret)) {
+        printf("[WiFi] socInit failed: %08lX\n", ret);
+        free(soc_buf);
+        return;
+    }
+
+    /* Create server socket */
+    g_server_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (g_server_socket < 0) {
+        printf("[WiFi] Socket creation failed: %d\n", errno);
+        socExit();
+        free(soc_buf);
+        return;
+    }
+
+    int opt = 1;
+    setsockopt(g_server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(WIFI_SERVER_PORT);
+    addr.sin_addr.s_addr = gethostid();
+
+    if (bind(g_server_socket, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        printf("[WiFi] Bind failed: %d\n", errno);
+        close(g_server_socket);
+        socExit();
+        free(soc_buf);
+        return;
+    }
+
+    if (listen(g_server_socket, 5) != 0) {
+        printf("[WiFi] Listen failed: %d\n", errno);
+        close(g_server_socket);
+        socExit();
+        free(soc_buf);
+        return;
+    }
+
+    /* Get our IP for display */
+    inet_ntop(AF_INET, &addr.sin_addr, g_server_address, sizeof(g_server_address));
+    printf("[WiFi] HTTP server started on http://%s:%d\n", g_server_address, WIFI_SERVER_PORT);
+
+    g_wifi_server_ready = true;
+
+    /* Accept loop */
+    while (g_wifi_server_running) {
+        fcntl(g_server_socket, F_SETFL, fcntl(g_server_socket, F_GETFL, 0) | O_NONBLOCK);
+
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        s32 client_sock = accept(g_server_socket, (struct sockaddr *)&client_addr, &client_len);
+
+        if (client_sock >= 0) {
+            fcntl(client_sock, F_SETFL, fcntl(client_sock, F_GETFL, 0) & ~O_NONBLOCK);
+            handle_client(client_sock, &client_addr);
+        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            printf("[WiFi] Accept error: %d\n", errno);
+        }
+
+        svcSleepThread(100000000ULL);  /* 100ms */
+    }
+
+    /* Cleanup */
+    close(g_server_socket);
+    g_server_socket = -1;
+    g_wifi_server_ready = false;
+
+    socExit();
+    free(soc_buf);
+
+    printf("[WiFi] Server stopped\n");
+}
+
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
+void pkwbridge_wifi_init(void) {
+    if (g_wifi_server_running) return;
+
+    g_wifi_server_running = true;
+    g_server_thread = threadCreate(server_thread_func, NULL, NULL,
+                                    0x10000, 0x3B, -1);
+}
+
+void pkwbridge_wifi_cleanup(void) {
+    if (!g_wifi_server_running) return;
+
+    g_wifi_server_running = false;
+    threadJoin(g_server_thread, 10 * 1000 * 1000 * 1000ULL);  /* 10s timeout */
+    threadFree(g_server_thread);
+}
+
+bool pkwbridge_wifi_is_running(void) {
+    return g_wifi_server_ready;
+}
+
+const char *pkwbridge_wifi_get_address(void) {
+    return g_server_address;
+}
