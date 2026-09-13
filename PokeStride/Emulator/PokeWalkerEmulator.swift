@@ -49,6 +49,7 @@ class PokeWalkerEmulator: ObservableObject {
         let line = "[\(timestamp)] \(message)\n"
         if let data = line.data(using: .utf8) {
             logFileHandle?.write(data)
+            logFileHandle?.synchronizeFile()
         }
         print(message)
     }
@@ -68,6 +69,7 @@ class PokeWalkerEmulator: ObservableObject {
         logFileHandle?.synchronizeFile()
         logFileHandle?.closeFile()
         logFileHandle = nil
+        h8_set_log_file(nil)
     }
 
     // MARK: - ROM & EEPROM
@@ -207,8 +209,13 @@ class PokeWalkerEmulator: ObservableObject {
         }
         log("Starting emulator: ROM=\(rom.count) bytes, EEPROM=\(eepromData?.count ?? 0) bytes")
 
-        // C-side logging is no-op (g_logFile = NULL)
-        // All logging happens via Swift log() method above
+        // Set up C-side logging to same file
+        logFileHandle?.synchronizeFile()
+        logFileHandle?.closeFile()
+        logFileHandle = nil
+        if let cPath = logFileURL.path.cString(using: .utf8) {
+            h8_set_log_file(fopen(cPath, "a"))
+        }
 
         // Allocate state on heap
         let ptr = UnsafeMutablePointer<H8State>.allocate(capacity: 1)
