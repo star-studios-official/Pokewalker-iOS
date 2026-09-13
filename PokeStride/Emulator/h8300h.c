@@ -716,8 +716,8 @@ void h8_tick_ssu(H8State *s) {
             s->memory[SSU_SSRDR] = eeprom_read(s);
             s->memory[SSU_SSSR] |= SSSR_RDRF;
             if (ssu_log_counter <= 200) {
-                LOG("  EEPROM: byte=0x%02X, state=%d, read=0x%02X",
-                    sstdr, s->eeprom.buffer.state, s->eeprom.next_read);
+                LOG("  EEPROM: byte=0x%02X, buf_off=%d, read=0x%02X",
+                    sstdr, s->eeprom.buf_off, s->eeprom.next_read);
             }
         } else if (isLCDData && isLCD) {
             lcd_process_data(s, sstdr);
@@ -1160,7 +1160,7 @@ int h8_step(H8State *s) {
                         s->pc += 4;
                     } break;
                     case 0x8: {
-                        uint32_t addr = cdef & 0xFFFF | 0xFF0000;
+                        uint32_t addr = (cdef & 0xFFFF) | 0xFF0000;
                         RegRef32 rs = getRegRef32(s, dL);
                         setFlagsMOV(&s->flags, *rs.ptr, 32);
                         setMem32(s, addr, *rs.ptr);
