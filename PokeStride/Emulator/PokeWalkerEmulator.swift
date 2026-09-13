@@ -287,6 +287,10 @@ class PokeWalkerEmulator: ObservableObject {
             let r = h8_step(state)
             if r == 0 { break }
             cycles += Int32(r)
+            // SSU tick every 3 CPU cycles (matches pokestride)
+            if (cycles & 3) == 0 {
+                h8_tick_ssu(state)
+            }
         }
         self.steps = h8_get_steps(state)
         self.lifetimeSteps = h8_get_lifetime_steps(state)

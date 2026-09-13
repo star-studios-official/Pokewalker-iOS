@@ -200,126 +200,122 @@ static uint32_t getMem32(H8State *s, uint32_t addr) {
                        (s->memory[addr+2] << 8) | s->memory[addr+3]);
 }
 
-/* ── SSU/SPI chip-select routing ────────────────────────────────────────── */
+/* Chip-select routing is now in h8_tick_ssu */
 
-/*
- * PDR1 bits:
- *   bit 0 = LCD CS (active low)
- *   bit 1 = LCD D/C (0=command, 1=data when LCD CS is low)
- *   bit 2 = EEPROM CS (active low)
- * PDR9 bits:
- *   bit 0 = Accel CS (active low)
- */
-
-static bool lcdSelected(H8State *s) {
-    return !(s->pdr1 & 0x01);  /* LCD CS active low */
-}
-
-static bool eepromSelected(H8State *s) {
-    return !(s->pdr1 & 0x04);  /* EEPROM CS active low */
-}
-
-static bool accelSelected(H8State *s) {
-    return !(s->pdr9 & 0x01);  /* Accel CS active low */
-}
-
-static bool lcdDataMode(H8State *s) {
-    return (s->pdr1 & 0x02) != 0;  /* D/C bit: 1 = data, 0 = command */
-}
-
-/* ── LCD (SSD1854) SPI protocol ─────────────────────────────────────────── */
-
-static uint8_t LCD_CMD_MAP[256];
-static void lcdInitCmdMap(void);
+/* ── LCD processing (matches pokestride) ────────────────────────────────── */
 
 static void lcd_process_cmd(H8State *s, uint8_t byte) {
     H8LCD *lcd = &s->lcd;
-    lcd->cmdBuf[lcd->cmdBufOff++] = byte;
-
-    uint8_t mapIdx = LCD_CMD_MAP[lcd->cmdBuf[0]];
-    uint8_t expectedArgs = 0;
-    /* Decode expected args from map index (0-6 = 0 args, 7 = 2 args, etc.) */
-    switch (mapIdx) {
-        case 0x07: expectedArgs = 2; break; /* Set Display Start Line */
-        case 0x08: expectedArgs = 2; break; /* Set Display Offset */
-        case 0x09: expectedArgs = 2; break; /* Set Multiplex Ratio */
-        case 0x0A: expectedArgs = 2; break; /* Set N-line Inversion */
-        case 0x0D: case 0x0E: case 0x0F: case 0x10:
-            expectedArgs = 2; break; /* Window corners */
-        case 0x13: expectedArgs = 2; break; /* Set Contrast */
-        case 0x15: case 0x16: case 0x17: case 0x18:
-        case 0x19: case 0x1A: case 0x1B: case 0x1C:
-            expectedArgs = 2; break; /* Gray modes */
-        default: expectedArgs = 0; break;
-    }
-
-    if (lcd->cmdBufOff > expectedArgs) {
-        /* Execute command */
-        uint8_t cmd = lcd->cmdBuf[0];
-        /* Column address: lower 4 bits of 0x00-0x0F */
-        if (cmd <= 0x0F) {
-            lcd->column_address = (lcd->column_address & 0xF0) | ((cmd & 0x0F) << 1);
+    switch (lcd->state) {
+    case H8LCD_EMPTY:
+        switch (byte) {
+        case 0x00: case 0x01: case 0x02: case 0x03:
+        case 0x04: case 0x05: case 0x06: case 0x07:
+        case 0x08: case 0x09: case 0x0A: case 0x0B:
+        case 0x0C: case 0x0D: case 0x0E: case 0x0F:
+            /* Set lower column address */
+            lcd->currentColumn = (byte & 0xF) | (lcd->currentColumn & 0xF0);
+            lcd->currentByte = 0;
+            break;
+        case 0x10: case 0x11: case 0x12: case 0x13:
+        case 0x14: case 0x15: case 0x16: case 0x17:
+            /* Set upper column address */
+            lcd->currentColumn = (lcd->currentColumn & 0x0F) | ((byte & 0x7) << 4);
+            lcd->currentByte = 0;
+            break;
+        case 0x40: case 0x41: case 0x42: case 0x43:
+        case 0x44: case 0x45: case 0x46: case 0x47:
+            /* Set display start line (first half) */
+            lcd->displayStartLine = byte & 0x7F;
+            lcd->startLineSet = true;
+            lcd->startLineActive = (byte & 0x7F) >= 64;
+            break;
+        case 0x48: case 0x49: case 0x4A: case 0x4B:
+        case 0x4C: case 0x4D: case 0x4E: case 0x4F:
+        case 0x50: case 0x51: case 0x52: case 0x53:
+        case 0x54: case 0x55: case 0x56: case 0x57:
+        case 0x58: case 0x59: case 0x5A: case 0x5B:
+        case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+        case 0x60: case 0x61: case 0x62: case 0x63:
+        case 0x64: case 0x65: case 0x66: case 0x67:
+        case 0x68: case 0x69: case 0x6A: case 0x6B:
+        case 0x6C: case 0x6D: case 0x6E: case 0x6F:
+        case 0x70: case 0x71: case 0x72: case 0x73:
+        case 0x74: case 0x75: case 0x76: case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B:
+        case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+            /* Set display start line (full range 0x40-0x7F) */
+            lcd->displayStartLine = byte & 0x7F;
+            lcd->startLineSet = true;
+            lcd->startLineActive = (byte & 0x7F) >= 64;
+            break;
+        case 0x81:
+            /* Set contrast — next byte is the value */
+            lcd->state = H8LCD_READING_CONTRAST;
+            break;
+        case 0xA0:
+            /* Set segment remap (no-op for now) */
+            break;
+        case 0xA4:
+            /* Normal display mode */
+            break;
+        case 0xA5:
+            /* All display ON */
+            break;
+        case 0xA6:
+            /* Normal display */
+            break;
+        case 0xA7:
+            /* Inverse display */
+            break;
+        case 0xAF:
+            /* Display ON */
+            break;
+        case 0xAE:
+            /* Display OFF */
+            break;
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3:
+        case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+        case 0xB8: case 0xB9: case 0xBA: case 0xBB:
+        case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+            /* Set page address (lower nibble = page) */
+            lcd->currentPage = byte & 0xF;
+            lcd->currentByte = 0;
+            break;
+        case 0xE1:
+            /* Reset/init command (no-op) */
+            break;
+        default:
+            break;
         }
-        /* Upper column address: 0x10-0x1F */
-        else if (cmd >= 0x10 && cmd <= 0x1F) {
-            lcd->column_address = (lcd->column_address & 0x0F) | ((cmd & 0x0F) << 5);
-        }
-        /* Display start line: 0x40-0x7F */
-        else if (cmd >= 0x40 && cmd <= 0x7F) {
-            lcd->display_start_line = cmd & 0x3F;
-        }
-        /* Contrast: 0x81 + value */
-        else if (cmd == 0x81 && lcd->cmdBufOff >= 2) {
-            lcd->contrast = lcd->cmdBuf[1] & 0x3F;
-        }
-        /* Segment remap: 0xA0 or 0xA1 */
-        else if (cmd == 0xA0 || cmd == 0xA1) {
-            lcd->segment_remap = (cmd & 0x01) != 0;
-        }
-        /* Normal display: 0xA6 */
-        else if (cmd == 0xA6) {
-            lcd->inverse_display = false;
-        }
-        /* Inverse display: 0xA7 */
-        else if (cmd == 0xA7) {
-            lcd->inverse_display = true;
-        }
-        /* Display OFF: 0xAE */
-        else if (cmd == 0xAE) {
-            lcd->display_on = false;
-        }
-        /* Display ON: 0xAF */
-        else if (cmd == 0xAF) {
-            lcd->display_on = true;
-        }
-        /* Set page address: 0xB0-0xBF (lower nibble = page) */
-        else if (cmd >= 0xB0 && cmd <= 0xBF) {
-            lcd->page_address = cmd & 0x0F;
-        }
-        /* All display ON: 0xA5 */
-        else if (cmd == 0xA5) {
-            lcd->entire_display_on = true;
-        }
-        /* Normal display mode: 0xA4 */
-        else if (cmd == 0xA4) {
-            lcd->entire_display_on = false;
-        }
-        /* NOP for unknown */
-        lcd->cmdBufOff = 0;
+        break;
+    case H8LCD_READING_CONTRAST:
+        lcd->contrast = byte & 0x3F;
+        lcd->state = H8LCD_EMPTY;
+        break;
+    case H8LCD_READING_STARTLINE:
+        lcd->displayStartLine = byte & 0x7F;
+        lcd->startLineSet = true;
+        lcd->startLineActive = (byte & 0x7F) >= 64;
+        lcd->state = H8LCD_EMPTY;
+        break;
     }
 }
 
 static void lcd_process_data(H8State *s, uint8_t byte) {
     H8LCD *lcd = &s->lcd;
-    /* Write byte to GDDRAM at current page/column */
-    if (lcd->page_address < 128 && lcd->column_address < 128) {
-        lcd->ram[lcd->page_address][lcd->column_address] = byte;
+    /* Write to GDDRAM using pokestride layout: page * WIDTH * 2 + column * 2 + byte */
+    size_t idx = (lcd->currentPage * H8_LCD_WIDTH * H8_LCD_BYTES_PER_STRIPE)
+               + lcd->currentColumn * H8_LCD_BYTES_PER_STRIPE
+               + lcd->currentByte;
+    if (idx < H8_LCD_MEM_SIZE) {
+        lcd->memory[idx] = byte;
     }
-    /* Auto-advance column address */
-    lcd->column_address++;
-    if (lcd->column_address >= 128) {
-        lcd->column_address = 0;
+    /* After second byte (bitplane 1), advance column */
+    if (lcd->currentByte == 1) {
+        lcd->currentColumn = (lcd->currentColumn + 1);
     }
+    lcd->currentByte = (lcd->currentByte + 1) % H8_LCD_BYTES_PER_STRIPE;
 }
 
 /* ── EEPROM (M95512) SPI protocol ───────────────────────────────────────── */
@@ -413,31 +409,6 @@ static void eeprom_stop(H8State *s) {
     s->eeprom.status &= ~0x02; /* Clear WEL */
 }
 
-/* ── SSU SPI transfer ───────────────────────────────────────────────────── */
-
-static uint8_t ssu_transfer(H8State *s, uint8_t mosi_byte) {
-    uint8_t miso_byte = 0xFF;
-
-    if (lcdSelected(s)) {
-        /* LCD transfer */
-        if (lcdDataMode(s)) {
-            lcd_process_data(s, mosi_byte);
-        } else {
-            lcd_process_cmd(s, mosi_byte);
-        }
-        miso_byte = 0x00; /* LCD doesn't send meaningful data back */
-    } else if (eepromSelected(s)) {
-        /* EEPROM transfer */
-        eeprom_write(s, mosi_byte);
-        miso_byte = eeprom_read(s);
-    } else if (accelSelected(s)) {
-        /* Accelerometer transfer — simplified: return 0 */
-        miso_byte = 0x00;
-    }
-
-    return miso_byte;
-}
-
 /* ── Memory-mapped I/O intercepts ───────────────────────────────────────── */
 
 static void setMem8(H8State *s, uint32_t addr, uint8_t value) {
@@ -493,26 +464,16 @@ static void setMem8(H8State *s, uint32_t addr, uint8_t value) {
         return;
     }
 
-    /* SSU SSTDR write at 0xF0EB — SPI transmit */
+    /* SSU SSTDR write at 0xF0EB — clear TDRE+TEND (transfer starts) */
     if (addr == SSU_SSTDR) {
-        s->ssu.sstdr = value;
-        /* Perform SPI transfer */
-        s->ssu.shiftReg = ssu_transfer(s, value);
-        s->ssu.shiftValid = true;
-        /* Set status flags: TDRE=1 (TX buffer empty), RDRF=1 (RX data ready) */
-        s->memory[SSU_SSSR] |= SSSR_TDRE | SSSR_RDRF;
+        s->memory[addr] = value;
+        /* Clear TDRE and TEND — SSU tick will set them after transfer */
+        s->memory[SSU_SSSR] &= ~(SSSR_TDRE | SSSR_TEND);
+        s->ssu.progress = 0;
         return;
     }
 
-    /* SSU SSSR write at 0xF0E4 — status register (read-1-write-0) */
-    if (addr == SSU_SSSR) {
-        uint8_t old = s->memory[addr];
-        /* Only allow clearing flags, not setting them */
-        s->memory[addr] = old & value;
-        return;
-    }
-
-    /* SSU register writes — just store */
+    /* SSU register writes — just store to memory */
     if (addr >= SSU_SSCRH && addr <= SSU_SSER) {
         s->memory[addr] = value;
         return;
@@ -538,18 +499,15 @@ static uint8_t getMem8(H8State *s, uint32_t addr) {
         }
     }
 
-    /* SSU SSRDR read at 0xF0E9 — SPI receive */
+    /* SSU SSRDR read at 0xF0E9 — clear RDRF */
     if (addr == SSU_SSRDR) {
-        if (s->ssu.shiftValid) {
-            value = s->ssu.shiftReg;
-            s->ssu.shiftValid = false;
-        }
+        s->memory[SSU_SSSR] &= ~SSSR_RDRF;
         return value;
     }
 
-    /* SSU SSSR read at 0xF0E4 — always show TDRE=1, RDRF=1, TEND=1 */
+    /* SSU SSSR read at 0xF0E4 — return actual memory contents */
     if (addr == SSU_SSSR) {
-        return SSSR_TDRE | SSSR_RDRF | SSSR_TEND;
+        return value;
     }
 
     /* PORT1 read */
@@ -579,47 +537,36 @@ static void setMem32(H8State *s, uint32_t addr, uint32_t value) {
     s->memory[addr + 3] = value & 0xFF;
 }
 
-/* ── LCD rendering ──────────────────────────────────────────────────────── */
+/* PokéWalker 4-level grayscale palette (matches pokestride definitions.h) */
+static const uint32_t pokestride_palette[4] = {
+    0xFFCCCCCCu,  /* GRAY_3 (lightest) */
+    0xFF999999u,  /* GRAY_2 */
+    0xFF666666u,  /* GRAY_1 */
+    0xFF333333u,  /* GRAY_0 (darkest) */
+};
+
+/* ── LCD rendering (matches pokestride fillVideoBuffer) ──────────────────── */
 
 void h8_render_lcd(H8State *s, uint32_t *videoBuffer) {
     H8LCD *lcd = &s->lcd;
-    int startLine;
-
-    if (lcd->display_start_line > 0 || lcd->display_on) {
-        startLine = lcd->display_start_line & 0x3F;
+    int startRow;
+    if (lcd->startLineActive) {
+        startRow = lcd->displayStartLine & 0x7F;
     } else {
-        startLine = 0;
+        startRow = lcd->currentBuffer ? 64 : 0;
+        lcd->currentBuffer ^= 1;
     }
-
     for (int y = 0; y < H8_LCD_HEIGHT; y++) {
-        int physRow = (startLine + y) % 64;
-        int page = physRow >> 3;
-        int yBit = physRow & 7;
-
+        const int physRow = (startRow + y) & 0x7F;
+        const int yBit  = physRow & 7;
+        const int yPage = physRow >> 3;
+        const int rowOff = yPage * H8_LCD_WIDTH * H8_LCD_BYTES_PER_STRIPE;
+        const uint8_t mask = (uint8_t)(1 << yBit);
         for (int x = 0; x < H8_LCD_WIDTH; x++) {
-            int col = x;
-            if (lcd->segment_remap) {
-                col = 127 - x;
-            }
-            /* SSD1854 maps to LCD columns: offset by 32 for 96-wide display */
-            int memCol = (col + 32) & 0x7F;
-
-            uint8_t byte = (page < 128 && memCol < 128) ? lcd->ram[page][memCol] : 0;
-            uint8_t pixel = (byte >> yBit) & 1;
-
-            /* 2-bit palette from the single bitplane: bit set = dark, bit clear = light */
-            /* But PokéWalker uses dual-bitplane 4-level grayscale from the two byte writes per column */
-            /* For simplicity, use the single bit we have */
-            uint32_t color;
-            if (lcd->entire_display_on) {
-                color = H8_GRAY_3; /* all pixels on */
-            } else if (pixel) {
-                color = lcd->inverse_display ? H8_GRAY_0 : H8_GRAY_3;
-            } else {
-                color = lcd->inverse_display ? H8_GRAY_3 : H8_GRAY_0;
-            }
-
-            videoBuffer[y * H8_LCD_WIDTH + x] = color;
+            int base = rowOff + 2 * x;
+            uint8_t firstBit  = (lcd->memory[base    ] & mask) >> yBit;
+            uint8_t secondBit = (lcd->memory[base + 1] & mask) >> yBit;
+            videoBuffer[y * H8_LCD_WIDTH + x] = pokestride_palette[(firstBit << 1) | secondBit];
         }
     }
 }
@@ -717,6 +664,54 @@ void h8_tick_sci3(H8State *s) {
                 s->sci3.rxCountdown = 320;
             }
         }
+    }
+}
+
+/* ── SSU/SPI tick (runs every ~3 CPU cycles, like pokestride) ───────────── */
+
+void h8_tick_ssu(H8State *s) {
+    uint8_t sssr = s->memory[SSU_SSSR];
+    uint8_t sser = s->memory[SSU_SSER];
+
+    /* If TE is not set, just set TDRE */
+    if (!(sser & 0x80)) { /* TE bit */
+        s->memory[SSU_SSSR] |= SSSR_TDRE;
+        return;
+    }
+
+    /* If TDRE is already set, nothing to send */
+    if (sssr & SSSR_TDRE) return;
+
+    /* Process the SPI transfer (matches pokestride SSU tick) */
+    s->ssu.progress += 1;
+    if (s->ssu.progress >= 7) {
+        s->ssu.progress = 0;
+
+        uint8_t sstdr = s->memory[SSU_SSTDR];
+        bool isEEPROM = !(s->pdr1 & 0x04);  /* PDR1 bit 2 = EEPROM CS */
+        bool isLCDData = !!(s->pdr1 & 0x02); /* PDR1 bit 1 = LCD D/C */
+        bool isLCD = !(s->pdr1 & 0x01);      /* PDR1 bit 0 = LCD CS */
+        bool isAccel = !(s->pdr9 & 0x01);    /* PDR9 bit 0 = Accel CS */
+
+        if (isEEPROM) {
+            /* EEPROM SPI transfer */
+            eeprom_write(s, sstdr);
+            s->memory[SSU_SSRDR] = eeprom_read(s);
+            s->memory[SSU_SSSR] |= SSSR_RDRF;
+        } else if (isLCDData && isLCD) {
+            /* LCD data mode */
+            lcd_process_data(s, sstdr);
+        } else if (isLCD) {
+            /* LCD command mode */
+            lcd_process_cmd(s, sstdr);
+        } else if (isAccel) {
+            /* Accelerometer — simplified: return 0 */
+            s->memory[SSU_SSRDR] = 0x00;
+            s->memory[SSU_SSSR] |= SSSR_RDRF;
+        }
+
+        /* Set TDRE and TEND (transfer complete) */
+        s->memory[SSU_SSSR] |= SSSR_TDRE | SSSR_TEND;
     }
 }
 
@@ -894,19 +889,21 @@ void h8_init(H8State *s, const uint8_t *romData, const uint8_t *eepromData) {
     s->sci3.RDR3 = &s->memory[0xFF9D];
     s->sci3.IrCR = &s->memory[0xFFA7];
 
-    /* Initialize LCD command map */
-    lcdInitCmdMap();
-
     /* Initialize LCD state */
-    s->lcd.display_on = true;
     s->lcd.contrast = 0x20;
-    s->lcd.mux_ratio = 0x3F;
+    s->lcd.state = H8LCD_EMPTY;
+    s->lcd.currentPage = 0;
+    s->lcd.currentColumn = 0;
+    s->lcd.currentByte = 0;
+    s->lcd.displayStartLine = 0;
+    memset(s->lcd.memory, 0, H8_LCD_MEM_SIZE);
 
     /* Initialize EEPROM state */
     s->eeprom.buf_off = -1;
 
     /* Initialize SSU defaults */
     s->memory[SSU_SSSR] = SSSR_TDRE;
+    s->ssu.progress = 0;
 
     /* Initialize PORT defaults */
     s->pdr1 = 0x05;  /* Both LCD CS and EEPROM CS high (deselected) */
@@ -1758,63 +1755,4 @@ unimpl:
     return (int)cycles;
 }
 
-/* ── Static init for LCD command map ────────────────────────────────────── */
-
-static void lcdInitCmdMap(void) {
-    static bool inited = false;
-    if (inited) return;
-    inited = true;
-
-    /* All 0x00-0x0F: set lower column address → 0 args */
-    for (int i = 0x00; i <= 0x0F; i++) LCD_CMD_MAP[i] = 0x00;
-    /* All 0x10-0x1F: set upper column address → 0 args */
-    for (int i = 0x10; i <= 0x1F; i++) LCD_CMD_MAP[i] = 0x01;
-    /* 0x20-0x2F: 0 args */
-    for (int i = 0x20; i <= 0x2F; i++) LCD_CMD_MAP[i] = 0x02;
-    /* 0x30-0x3F: 0 args */
-    for (int i = 0x30; i <= 0x3F; i++) LCD_CMD_MAP[i] = 0x03;
-    /* 0x40-0x7F: set display start line → 0 args */
-    for (int i = 0x40; i <= 0x7F; i++) LCD_CMD_MAP[i] = 0x04;
-    /* 0x80: contrast → 1 arg (index 0x13) */
-    LCD_CMD_MAP[0x81] = 0x13;
-    /* 0x82-0x8F: other */
-    for (int i = 0x82; i <= 0x8F; i++) LCD_CMD_MAP[i] = 0x12;
-    /* 0xA0-0xA1: segment remap → 0 args */
-    LCD_CMD_MAP[0xA0] = 0x1F;
-    LCD_CMD_MAP[0xA1] = 0x1F;
-    /* 0xA2-0xA3: 0 args */
-    LCD_CMD_MAP[0xA2] = 0x20;
-    LCD_CMD_MAP[0xA3] = 0x20;
-    /* 0xA4: normal display → 0 args */
-    LCD_CMD_MAP[0xA4] = 0x21;
-    /* 0xA5: all display on → 0 args */
-    LCD_CMD_MAP[0xA5] = 0x21;
-    /* 0xA6: normal → 0 args */
-    LCD_CMD_MAP[0xA6] = 0x22;
-    /* 0xA7: inverse → 0 args */
-    LCD_CMD_MAP[0xA7] = 0x22;
-    /* 0xA8: power save → 0 args */
-    LCD_CMD_MAP[0xA8] = 0x24;
-    /* 0xA9-0xAF: various */
-    LCD_CMD_MAP[0xA9] = 0x26;
-    LCD_CMD_MAP[0xAA] = 0x28;
-    LCD_CMD_MAP[0xAB] = 0x28;
-    LCD_CMD_MAP[0xAC] = 0x27;
-    LCD_CMD_MAP[0xAD] = 0x27;
-    LCD_CMD_MAP[0xAE] = 0x28; /* Display OFF */
-    LCD_CMD_MAP[0xAF] = 0x28; /* Display ON */
-    /* 0xB0-0xBF: set page address → 0 args */
-    for (int i = 0xB0; i <= 0xBF; i++) LCD_CMD_MAP[i] = 0x29;
-    /* 0xC0-0xDF: 0 args */
-    for (int i = 0xC0; i <= 0xDF; i++) LCD_CMD_MAP[i] = 0x2B;
-    /* 0xE0-0xFF: various */
-    for (int i = 0xE0; i <= 0xFF; i++) LCD_CMD_MAP[i] = 0x2B;
-    LCD_CMD_MAP[0xE1] = 0x2C; /* exit power save */
-    LCD_CMD_MAP[0xE2] = 0x2D; /* software reset */
-    LCD_CMD_MAP[0xE3] = 0x2E;
-    LCD_CMD_MAP[0xE4] = 0x2F;
-    LCD_CMD_MAP[0xE5] = 0x31;
-    LCD_CMD_MAP[0xE6] = 0x33;
-    LCD_CMD_MAP[0xE7] = 0x34;
-    LCD_CMD_MAP[0xE8] = 0x35;
-}
+/* (lcdInitCmdMap removed — LCD commands now use simple state machine) */

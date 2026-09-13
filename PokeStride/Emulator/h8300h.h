@@ -39,9 +39,6 @@ extern "C" {
 
 #define H8_LCD_WIDTH       96
 #define H8_LCD_HEIGHT      64
-#define H8_LCD_MEM_WIDTH   128
-#define H8_LCD_MEM_HEIGHT  176
-#define H8_LCD_MEM_SIZE    (H8_LCD_MEM_WIDTH * H8_LCD_MEM_HEIGHT / 4)
 
 #define H8_SUB_CLOCK       32768
 #define H8_SYSTEM_CLOCK    3686400
@@ -89,24 +86,26 @@ typedef struct {
 } H8SCI3;
 
 /* ── LCD controller (SSD1854) — SPI-connected ───────────────────────────── */
+/* Memory layout matches pokestride: page * LCD_WIDTH * 2 + column * 2 + byte */
+/* 2 bytes per column = 2 bitplanes for 4-level grayscale */
+#define H8_LCD_MEM_WIDTH   128
+#define H8_LCD_MEM_HEIGHT  176
+#define H8_LCD_MEM_SIZE    (H8_LCD_MEM_WIDTH * H8_LCD_MEM_HEIGHT / 4)
+#define H8_LCD_BYTES_PER_STRIPE 2
+
+enum H8LCDState { H8LCD_EMPTY, H8LCD_READING_CONTRAST, H8LCD_READING_STARTLINE };
 
 typedef struct {
-    /* Internal GDDRAM: 128 pages × 128 columns, each column is 1 byte (8 bits = 8 rows) */
-    uint8_t  ram[128][128];  /* ram[page][column] */
-    uint8_t  page_address;
-    uint8_t  column_address;
-    uint8_t  display_start_line;
+    uint8_t  memory[H8_LCD_MEM_SIZE];  /* GDDRAM */
     uint8_t  contrast;
-    uint8_t  mux_ratio;
-    bool     display_on;
-    bool     inverse_display;
-    bool     entire_display_on;
-    bool     segment_remap;
-    /* Command parser state */
-    uint8_t  cmdBuf[4];
-    uint8_t  cmdBufOff;
-    uint8_t  cmdExpectedArgs;
-    bool     dataMode;  /* false = command, true = data */
+    enum H8LCDState state;
+    uint8_t  currentColumn;
+    uint8_t  currentPage;
+    uint8_t  currentByte;
+    bool     currentBuffer;       /* free-running half toggle (fallback) */
+    uint8_t  displayStartLine;    /* 0x40 start-line value */
+    bool     startLineSet;
+    bool     startLineActive;
 } H8LCD;
 
 /* ── EEPROM (M95512 SPI EEPROM) ─────────────────────────────────────────── */
@@ -122,10 +121,11 @@ typedef struct {
 /* ── SSU (Synchronous Serial Unit — SPI master) ─────────────────────────── */
 
 typedef struct {
-    uint8_t sscrh, sscrl, ssmr, sser, sssr;
-    uint8_t ssrdr, sstdr;
-    uint8_t shiftReg;      /* shift register for SPI transfer */
-    bool    shiftValid;    /* true when shiftReg has valid data from slave */
+    uint8_t *SSCRH, *SSCRL, *SSMR, *SSER, *SSSR;
+    uint8_t *SSRDR, *SSTDR;
+    uint8_t  shiftReg;
+    bool     shiftValid;
+    uint8_t  progress;     /* SSU transfer progress counter (0-7) */
 } H8SSU;
 
 /* ── Accelerometer (BMA150, simplified) ──────────────────────────────────── */
@@ -214,6 +214,7 @@ void h8_init(H8State *state, const uint8_t *romData, const uint8_t *eepromData);
 int  h8_step(H8State *state);
 void h8_tick_subclock(H8State *state, int ticks);
 void h8_tick_sci3(H8State *state);
+void h8_tick_ssu(H8State *state);
 void h8_set_keys(H8State *state, uint8_t buttons);
 void h8_inject_steps(H8State *state, uint32_t steps);
 uint32_t h8_get_steps(H8State *state);
