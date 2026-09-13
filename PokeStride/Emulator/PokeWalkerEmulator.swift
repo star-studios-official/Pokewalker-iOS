@@ -297,8 +297,14 @@ class PokeWalkerEmulator: ObservableObject {
         self.watts = h8_get_watts(state)
         self.isSleeping = h8_is_sleeping(state)
         frameCount += 1
-        if frameCount % 320 == 0 { // Log every ~10 seconds
-            log("Emu: steps=\(steps), life=\(lifetimeSteps), watts=\(watts), sleeping=\(isSleeping), pc=0x\(String(state.pointee.pc, radix: 16))")
+        // Log every 2 seconds for debugging
+        if frameCount % 64 == 0 {
+            let pc = state.pointee.pc
+            let sp = state.pointee.er[7]
+            let pdr1 = state.pointee.pdr1
+            let sssr = state.pointee.memory[0xF0E4]
+            let sser = state.pointee.memory[0xF0E3]
+            log("Emu[\(frameCount)]: pc=0x\(String(pc, radix: 16)) sp=0x\(String(sp, radix: 16)) steps=\(steps) life=\(lifetimeSteps) watts=\(watts) sleep=\(isSleeping) PDR1=0x\(String(pdr1, radix: 16)) SSSR=0x\(String(sssr, radix: 16)) SSER=0x\(String(sser, radix: 16))")
         }
     }
 

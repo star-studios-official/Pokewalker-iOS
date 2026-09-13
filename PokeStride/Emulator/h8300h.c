@@ -302,16 +302,24 @@ static void lcd_process_cmd(H8State *s, uint8_t byte) {
     }
 }
 
+static int lcd_data_log_counter = 0;
+
 static void lcd_process_data(H8State *s, uint8_t byte) {
     H8LCD *lcd = &s->lcd;
-    /* Write to GDDRAM using pokestride layout: page * WIDTH * 2 + column * 2 + byte */
     size_t idx = (lcd->currentPage * H8_LCD_WIDTH * H8_LCD_BYTES_PER_STRIPE)
                + lcd->currentColumn * H8_LCD_BYTES_PER_STRIPE
                + lcd->currentByte;
+    lcd_data_log_counter++;
+    if (lcd_data_log_counter <= 100 || (lcd_data_log_counter % 500 == 0)) {
+        LOG("LCD_DATA[%d] idx=%zu page=%d col=%d byte=%d val=0x%02X mem_size=%d",
+            lcd_data_log_counter, idx, lcd->currentPage, lcd->currentColumn,
+            lcd->currentByte, byte, H8_LCD_MEM_SIZE);
+    }
     if (idx < H8_LCD_MEM_SIZE) {
         lcd->memory[idx] = byte;
+    } else {
+        LOG("LCD_DATA OVERFLOW idx=%zu >= %d", idx, H8_LCD_MEM_SIZE);
     }
-    /* After second byte (bitplane 1), advance column */
     if (lcd->currentByte == 1) {
         lcd->currentColumn = (lcd->currentColumn + 1);
     }
@@ -446,13 +454,11 @@ static void setMem8(H8State *s, uint32_t addr, uint8_t value) {
         uint8_t oldPdr1 = s->pdr1;
         s->pdr1 = value;
         s->memory[addr] = value;
-
-        /* Detect EEPROM CS rising edge → end of SPI transaction */
-        if ((oldPdr1 & 0x04) && !(value & 0x04)) {
-            /* EEPROM CS going low — start of transaction */
-        } else if (!(oldPdr1 & 0x04) && (value & 0x04)) {
-            /* EEPROM CS going high — end of transaction */
+        LOG("PORT1 write: 0x%02X -> 0x%02X (LCD_CS=%d LCD_DC=%d EEPROM_CS=%d) pc=0x%04X",
+            oldPdr1, value, !(value & 0x01), !!(value & 0x02), !(value & 0x04), s->pc);
+        if (!(oldPdr1 & 0x04) && (value & 0x04)) {
             eeprom_stop(s);
+            LOG("  EEPROM CS high — transaction end");
         }
         return;
     }
@@ -467,9 +473,10 @@ static void setMem8(H8State *s, uint32_t addr, uint8_t value) {
     /* SSU SSTDR write at 0xF0EB — clear TDRE+TEND (transfer starts) */
     if (addr == SSU_SSTDR) {
         s->memory[addr] = value;
-        /* Clear TDRE and TEND — SSU tick will set them after transfer */
         s->memory[SSU_SSSR] &= ~(SSSR_TDRE | SSSR_TEND);
         s->ssu.progress = 0;
+        LOG("SSTDR_W: 0x%02X pc=0x%04X PDR1=0x%02X PDR9=0x%02X SSSR=0x%02X",
+            value, s->pc, s->pdr1, s->pdr9, s->memory[SSU_SSSR]);
         return;
     }
 
@@ -502,6 +509,7 @@ static uint8_t getMem8(H8State *s, uint32_t addr) {
     /* SSU SSRDR read at 0xF0E9 — clear RDRF */
     if (addr == SSU_SSRDR) {
         s->memory[SSU_SSSR] &= ~SSSR_RDRF;
+        LOG("SSRDR_R: 0x%02X pc=0x%04X", value, s->pc);
         return value;
     }
 
@@ -669,6 +677,8 @@ void h8_tick_sci3(H8State *s) {
 
 /* ── SSU/SPI tick (runs every ~3 CPU cycles, like pokestride) ───────────── */
 
+static int ssu_log_counter = 0;
+
 void h8_tick_ssu(H8State *s) {
     uint8_t sssr = s->memory[SSU_SSSR];
     uint8_t sser = s->memory[SSU_SSER];
@@ -693,24 +703,49 @@ void h8_tick_ssu(H8State *s) {
         bool isLCD = !(s->pdr1 & 0x01);      /* PDR1 bit 0 = LCD CS */
         bool isAccel = !(s->pdr9 & 0x01);    /* PDR9 bit 0 = Accel CS */
 
+        ssu_log_counter++;
+        if (ssu_log_counter <= 200) {
+            LOG("SSU[%d] pc=0x%04X SSTDR=0x%02X PDR1=0x%02X PDR9=0x%02X "
+                "EEPROM=%d LCD=%d LCDData=%d Accel=%d",
+                ssu_log_counter, s->pc, sstdr, s->pdr1, s->pdr9,
+                isEEPROM, isLCD, isLCDData, isAccel);
+        }
+
         if (isEEPROM) {
-            /* EEPROM SPI transfer */
             eeprom_write(s, sstdr);
             s->memory[SSU_SSRDR] = eeprom_read(s);
             s->memory[SSU_SSSR] |= SSSR_RDRF;
+            if (ssu_log_counter <= 200) {
+                LOG("  EEPROM: byte=0x%02X, state=%d, read=0x%02X",
+                    sstdr, s->eeprom.buffer.state, s->eeprom.next_read);
+            }
         } else if (isLCDData && isLCD) {
-            /* LCD data mode */
             lcd_process_data(s, sstdr);
+            if (ssu_log_counter <= 200) {
+                LOG("  LCD DATA: page=%d col=%d byte=%d val=0x%02X",
+                    s->lcd.currentPage, s->lcd.currentColumn,
+                    s->lcd.currentByte, sstdr);
+            }
         } else if (isLCD) {
-            /* LCD command mode */
             lcd_process_cmd(s, sstdr);
+            if (ssu_log_counter <= 200) {
+                LOG("  LCD CMD: 0x%02X state=%d page=%d col=%d startLine=%d",
+                    sstdr, s->lcd.state, s->lcd.currentPage,
+                    s->lcd.currentColumn, s->lcd.displayStartLine);
+            }
         } else if (isAccel) {
-            /* Accelerometer — simplified: return 0 */
             s->memory[SSU_SSRDR] = 0x00;
             s->memory[SSU_SSSR] |= SSSR_RDRF;
+            if (ssu_log_counter <= 200) {
+                LOG("  ACCEL: byte=0x%02X", sstdr);
+            }
+        } else {
+            if (ssu_log_counter <= 200) {
+                LOG("  IDLE: no chip selected (PDR1=0x%02X PDR9=0x%02X)",
+                    s->pdr1, s->pdr9);
+            }
         }
 
-        /* Set TDRE and TEND (transfer complete) */
         s->memory[SSU_SSSR] |= SSSR_TDRE | SSSR_TEND;
     }
 }
@@ -911,8 +946,16 @@ void h8_init(H8State *s, const uint8_t *romData, const uint8_t *eepromData) {
     s->pdr9 = 0x01;  /* Accel CS high (deselected) */
     s->memory[PORT9_ADDR] = s->pdr9;
 
-    LOG("h8_init: Complete. ROM entry=0x%04X, LCD CS=high, EEPROM CS=high",
-        s->entry);
+    LOG("h8_init: Complete. entry=0x%04X PC=0x%04X SP=0x%08X",
+        s->entry, s->pc, s->er[7]);
+    LOG("  ROM[0..3]=%02X %02X %02X %02X, ROM[0x2C4..]=%02X %02X %02X %02X",
+        s->memory[0], s->memory[1], s->memory[2], s->memory[3],
+        s->memory[0x2C4], s->memory[0x2C5], s->memory[0x2C6], s->memory[0x2C7]);
+    LOG("  EEPROM[0..7]=%02X %02X %02X %02X %02X %02X %02X %02X",
+        s->eeprom.mem[0], s->eeprom.mem[1], s->eeprom.mem[2], s->eeprom.mem[3],
+        s->eeprom.mem[4], s->eeprom.mem[5], s->eeprom.mem[6], s->eeprom.mem[7]);
+    LOG("  PDR1=0x%02X PDR9=0x%02X SSSR=0x%02X SSER=0x%02X",
+        s->pdr1, s->pdr9, s->memory[SSU_SSSR], s->memory[SSU_SSER]);
 }
 
 void h8_set_keys(H8State *s, uint8_t buttons) {
